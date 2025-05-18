@@ -207,7 +207,7 @@ struct FStructAttribute : public FFastArraySerializerItem
 
 	bool operator==(const FStructAttribute& Other) const
 	{
-		return AttributeTag == Other.AttributeTag && AttributeValue == Other.AttributeValue;
+		return AttributeTag == Other.AttributeTag;
 	}
 
 	friend uint32 GetTypeHash(const FStructAttribute& StructAttribute)
