@@ -25,9 +25,14 @@
 			"Type": "UncookedOnly",
 			"LoadingPhase": "Default"
 		},
-		{
+				{
 			"Name": "SimpleGameplayAbilitySystemDebugger",
 			"Type": "DeveloperTool",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "SimpleGameplayAbilitySystemTest",
+			"Type": "Runtime",
 			"LoadingPhase": "Default"
 		}
 	]

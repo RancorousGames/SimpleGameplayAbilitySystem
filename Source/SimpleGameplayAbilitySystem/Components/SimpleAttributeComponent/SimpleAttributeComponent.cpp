@@ -649,8 +649,8 @@ void USimpleAttributeComponent::AddStructAttribute(FStructAttribute AttributeToA
 	// This is a new attribute
 	if (AttributeIndex == INDEX_NONE)
 	{
-		// Initialise the data within the struct
-		if (AttributeToAdd.StructType)
+		// Initialize the data within the struct if it's not already initialized
+		if (AttributeToAdd.StructType && !AttributeToAdd.AttributeValue.IsValid())
 		{
 			AttributeToAdd.AttributeValue.InitializeAs(AttributeToAdd.StructType);
 		}
