@@ -55,7 +55,9 @@ enum class EAttributeValueType : uint8
 	MaxCurrentValue,
 	MinCurrentValue,
 	MaxBaseValue,
-	MinBaseValue
+	MinBaseValue,
+	BaseRegeneration,
+	CurrentRegeneration,
 };
 
 UENUM(BlueprintType)
@@ -197,13 +199,27 @@ struct FFloatAttribute : public FFastArraySerializerItem
 	FGameplayTag AttributeTag;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	float BaseValue;
+	float BaseValue = 0.f;
 	
+	// CurrentValue represents the last authoritative value set by a discrete change or server true-up.
+    // For ongoing regen, clients will predict from this using regen parameters.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	float CurrentValue;
+	float CurrentValue = 0.f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	FValueLimits ValueLimits;
+	
+    UPROPERTY() 
+    float BaseRegenRate = 0.0f;
+	
+	UPROPERTY() 
+	float CurrentRegenRate = 0.0f;
+	
+    UPROPERTY() 
+    double LastRegenParamsUpdateTime_Server = 0.0f; 
+
+    UPROPERTY()
+    bool bIsRegenerating = false;
 
 	void PreReplicatedRemove(const struct FFloatAttributeContainer& InArraySerializer);
 	void PostReplicatedAdd(const struct FFloatAttributeContainer& InArraySerializer);

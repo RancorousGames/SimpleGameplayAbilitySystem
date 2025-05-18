@@ -11,6 +11,11 @@ using enum EAbilityStatus;
 
 void USimpleGameplayAbilityComponent::AddFloatAttribute(FFloatAttribute AttributeToAdd, bool OverrideValuesIfExists)
 {
+	if (HasAuthority())
+	{
+		AttributeToAdd.LastRegenParamsUpdateTime_Server = GetServerTime();
+	}
+
 	for (FFloatAttribute& AuthorityAttribute : AuthorityFloatAttributes.Attributes)
 	{
 		if (AuthorityAttribute.AttributeTag.MatchesTagExact(AttributeToAdd.AttributeTag))
@@ -22,13 +27,17 @@ void USimpleGameplayAbilityComponent::AddFloatAttribute(FFloatAttribute Attribut
 			}
 
 			// Attribute exists and we want to override it
-			AuthorityAttribute = AttributeToAdd;
+			FFloatAttribute OldAttribute = AuthorityAttribute; // Store old state for event comparison
+			AuthorityAttribute = AttributeToAdd; 
+			CompareFloatAttributesAndSendEvents(OldAttribute, AuthorityAttribute); // Send events based on what changed
+
+
 			AuthorityFloatAttributes.MarkItemDirty(AuthorityAttribute);
 			return;
 		}
 	}
 	
-	AuthorityFloatAttributes.Attributes.Add(AttributeToAdd);
+	AuthorityFloatAttributes.Attributes.Add(AttributeToAdd); 
 	AuthorityFloatAttributes.MarkArrayDirty();
 	SendEvent(FDefaultTags::FloatAttributeAdded(), AttributeToAdd.AttributeTag, FInstancedStruct(), GetOwner(), {}, ESimpleEventReplicationPolicy::NoReplication);
 }
@@ -272,9 +281,9 @@ void USimpleGameplayAbilityComponent::CreateAttributeState(
 	}
 }
 
-bool USimpleGameplayAbilityComponent::HasFloatAttribute(const FGameplayTag AttributeTag)
+bool USimpleGameplayAbilityComponent::HasFloatAttribute(const FGameplayTag AttributeTag) const
 {
-	if (GetFloatAttribute(AttributeTag))
+	if (const_cast<USimpleGameplayAbilityComponent*>(this)->GetFloatAttribute(AttributeTag))
 	{
 		return true;
 	}
@@ -282,9 +291,9 @@ bool USimpleGameplayAbilityComponent::HasFloatAttribute(const FGameplayTag Attri
 	return false;
 }
 
-bool USimpleGameplayAbilityComponent::HasStructAttribute(const FGameplayTag AttributeTag)
+bool USimpleGameplayAbilityComponent::HasStructAttribute(const FGameplayTag AttributeTag) const
 {
-	if (GetStructAttribute(AttributeTag))
+	if (const_cast<USimpleGameplayAbilityComponent*>(this)->GetStructAttribute(AttributeTag))
 	{
 		return true;
 	}
@@ -292,33 +301,73 @@ bool USimpleGameplayAbilityComponent::HasStructAttribute(const FGameplayTag Attr
 	return false;
 }
 
-float USimpleGameplayAbilityComponent::GetFloatAttributeValue(EAttributeValueType ValueType, FGameplayTag AttributeTag, bool& WasFound)
+float USimpleGameplayAbilityComponent::GetFloatAttributeValue(EAttributeValueType ValueType, FGameplayTag AttributeTag, bool& WasFound, bool bPredictIfClient) const
 {
-	if (const FFloatAttribute* Attribute = GetFloatAttribute(AttributeTag))
-	{
-		WasFound = true;
+	WasFound = false;
+	const FFloatAttribute* Attribute = nullptr;
 
-		switch (ValueType)
+	if (HasAuthority())
+	{
+		Attribute = AuthorityFloatAttributes.Attributes.FindByPredicate([AttributeTag](const FFloatAttribute& Attr) {
+			return Attr.AttributeTag == AttributeTag;
+		});
+
+		if (Attribute)
 		{
+			WasFound = true;
+			return GetAuthoritativeCurrentValueWithRegen(*Attribute, ValueType);
+		}
+	}
+	else // Client
+	{
+		Attribute = LocalFloatAttributes.FindByPredicate([AttributeTag](const FFloatAttribute& Attr) {
+			return Attr.AttributeTag == AttributeTag;
+		});
+
+		if (Attribute)
+		{
+			WasFound = true;
+
+			if (bPredictIfClient && ValueType == EAttributeValueType::CurrentValue)
+			{
+				float Overflow = 0.f;
+				if (Attribute->bIsRegenerating && Attribute->CurrentRegenRate != 0.f)
+				{
+					const double ClientEstimatedServerTime = GetServerTime();
+					const double ElapsedTime = FMath::Max(0.0, ClientEstimatedServerTime - Attribute->LastRegenParamsUpdateTime_Server);
+					const float PredictedRegenAmount = Attribute->CurrentRegenRate * static_cast<float>(ElapsedTime);
+					const float PredictedCurrentValue = Attribute->CurrentValue + PredictedRegenAmount;
+					return ClampFloatAttributeValue(*Attribute, EAttributeValueType::CurrentValue, PredictedCurrentValue, Overflow);
+				}
+
+				return ClampFloatAttributeValue(*Attribute, EAttributeValueType::CurrentValue, Attribute->CurrentValue, Overflow);
+			}
+			// Not predicting or not CurrentValue
+			switch (ValueType)
+			{
 			case EAttributeValueType::BaseValue:
 				return Attribute->BaseValue;
 			case EAttributeValueType::CurrentValue:
 				return Attribute->CurrentValue;
 			case EAttributeValueType::MaxCurrentValue:
-				return Attribute->ValueLimits.MaxCurrentValue;
+				return Attribute->ValueLimits.UseMaxCurrentValue ? Attribute->ValueLimits.MaxCurrentValue : 0.f;
 			case EAttributeValueType::MinCurrentValue:
-				return Attribute->ValueLimits.MinCurrentValue;
+				return Attribute->ValueLimits.UseMinCurrentValue ? Attribute->ValueLimits.MinCurrentValue : 0.f;
 			case EAttributeValueType::MaxBaseValue:
-				return Attribute->ValueLimits.MaxBaseValue;
+				return Attribute->ValueLimits.UseMaxBaseValue ? Attribute->ValueLimits.MaxBaseValue : 0.f;
 			case EAttributeValueType::MinBaseValue:
-				return Attribute->ValueLimits.MinBaseValue;
+				return Attribute->ValueLimits.UseMinBaseValue ? Attribute->ValueLimits.MinBaseValue : 0.f;
+			case EAttributeValueType::BaseRegeneration:
+				return Attribute->BaseRegenRate;
+			case EAttributeValueType::CurrentRegeneration:
+				return Attribute->CurrentRegenRate;
 			default:
-				SIMPLE_LOG(this, FString::Printf(TEXT("[USimpleAttributeFunctionLibrary::GetFloatAttributeValue]: ValueType %d not supported."), static_cast<int32>(ValueType)));
+				SIMPLE_LOG(this, FString::Printf(TEXT("[USimpleGameplayAbilityComponent::GetFloatAttributeValue]: ValueType %d not supported."), static_cast<int32>(ValueType)));
 				return 0.0f;
+			}
 		}
 	}
 	
-	WasFound = false;
 	return 0.0f;
 }
 
@@ -331,8 +380,10 @@ bool USimpleGameplayAbilityComponent::SetFloatAttributeValue(EAttributeValueType
 		SIMPLE_LOG(this, FString::Printf(TEXT("[USimpleAttributeFunctionLibrary::SetFloatAttributeValue]: Attribute %s not found."), *AttributeTag.ToString()));
 		return false;
 	}
+
+    float ValueToSet = NewValue;
 	
-	const float ClampedValue = ClampFloatAttributeValue(*Attribute, ValueType, NewValue, Overflow);
+	const float ClampedValue = ClampFloatAttributeValue(*Attribute, ValueType, ValueToSet, Overflow);
 				
 	switch (ValueType)
 	{
@@ -341,7 +392,23 @@ bool USimpleGameplayAbilityComponent::SetFloatAttributeValue(EAttributeValueType
 			SendFloatAttributeChangedEvent(FDefaultTags::FloatAttributeBaseValueChanged(), AttributeTag, ValueType, ClampedValue);
 			break;
 		case EAttributeValueType::CurrentValue:
+			// If server and regenerating, ensure CurrentValue is trued up before applying the new discrete value.
+			if (HasAuthority() && Attribute->bIsRegenerating)
+			{
+				// GetAuthoritativeCurrentValueWithRegen calculates the value if read now, including regen.
+				// This effectively "uses up" the regen time before the new discrete value is set.
+				float AuthoritativeCurrentValue = GetAuthoritativeCurrentValueWithRegen(*Attribute, EAttributeValueType::CurrentValue);
+                // We don't assign AuthoritativeCurrentValue directly here, as ValueToSet is the *new* value after clamping NewValue.
+                // The GetAuthoritativeCurrentValueWithRegen call inside SetFloatAttributeValue's server path (if called from GetFloatAttributeValue)
+                // would have already updated Attribute->CurrentValue and Attribute->LastRegenParamsUpdateTime_Server.
+                // However, SetFloatAttributeValue for CurrentValue should itself be authoritative.
+                Attribute->CurrentValue = AuthoritativeCurrentValue; // True up internal state
+				Attribute->LastRegenParamsUpdateTime_Server = GetServerTime(); // Mark time of true-up
+			}
 			Attribute->CurrentValue = ClampedValue;
+			if (HasAuthority())
+				Attribute->LastRegenParamsUpdateTime_Server = GetServerTime();
+
 			SendFloatAttributeChangedEvent(FDefaultTags::FloatAttributeCurrentValueChanged(), AttributeTag, ValueType, ClampedValue);
 			break;
 		case EAttributeValueType::MaxCurrentValue:
@@ -359,6 +426,31 @@ bool USimpleGameplayAbilityComponent::SetFloatAttributeValue(EAttributeValueType
 		case EAttributeValueType::MinBaseValue:
 			Attribute->ValueLimits.MinBaseValue = ClampedValue;
 			SendFloatAttributeChangedEvent(FDefaultTags::FloatAttributeMinBaseValueChanged(), AttributeTag, ValueType, ClampedValue);
+			break;
+		case EAttributeValueType::BaseRegeneration:
+			Attribute->BaseRegenRate = NewValue;
+			SendFloatAttributeChangedEvent(FDefaultTags::FloatAttributeBaseRegenRateChanged(), AttributeTag, ValueType, NewValue);
+			break;
+		case EAttributeValueType::CurrentRegeneration:
+			if (HasAuthority())
+			{
+				if (Attribute->bIsRegenerating)
+				{
+					// Before changing the rate, bring CurrentValue up-to-date with the old rate.
+					float ValueBasedOnOldRate = GetAuthoritativeCurrentValueWithRegen(*Attribute, EAttributeValueType::CurrentValue);
+					float TempOverflow = 0.f; 
+					Attribute->CurrentValue = ClampFloatAttributeValue(*Attribute, EAttributeValueType::CurrentValue, ValueBasedOnOldRate, TempOverflow);
+					Attribute->LastRegenParamsUpdateTime_Server = GetServerTime();
+				}
+			}
+			Attribute->CurrentRegenRate = NewValue; 
+			if (HasAuthority())
+			{
+				// Since a parameter essential for regeneration prediction (CurrentRegenRate) has changed, update the timestamp.
+				Attribute->LastRegenParamsUpdateTime_Server = GetServerTime();
+			}
+			// Assuming FDefaultTags::FloatAttributeCurrentRegenRateChanged() exists
+			SendFloatAttributeChangedEvent(FDefaultTags::FloatAttributeCurrentRegenRateChanged(), AttributeTag, ValueType, NewValue);
 			break;
 	}
 
@@ -396,6 +488,11 @@ bool USimpleGameplayAbilityComponent::OverrideFloatAttribute(FGameplayTag Attrib
 			Attribute.BaseValue = NewAttribute.BaseValue;
 			Attribute.CurrentValue = NewAttribute.CurrentValue;
 			Attribute.ValueLimits = NewAttribute.ValueLimits;
+
+			Attribute.BaseRegenRate = NewAttribute.BaseRegenRate;
+			Attribute.CurrentRegenRate = NewAttribute.CurrentRegenRate;
+			Attribute.bIsRegenerating = NewAttribute.bIsRegenerating;
+			Attribute.LastRegenParamsUpdateTime_Server = GetServerTime();
 			
 			AuthorityFloatAttributes.MarkItemDirty(Attribute);
 			
@@ -403,7 +500,7 @@ bool USimpleGameplayAbilityComponent::OverrideFloatAttribute(FGameplayTag Attrib
 		}
 	}
 
-	SIMPLE_LOG(this, FString::Printf(TEXT("[USimpleAttributeFunctionLibrary::OverrideFloatAttribute]: Attribute %s not found."), *AttributeTag.ToString()));
+	SIMPLE_LOG(this, FString::Printf(TEXT("[USimpleGameplayAbilityComponent::OverrideFloatAttribute]: Attribute %s not found on server."), *AttributeTag.ToString()));
 	return false;
 }
 
@@ -424,9 +521,9 @@ USimpleAttributeHandler* USimpleGameplayAbilityComponent::GetStructAttributeHand
 	return NewHandlerInstance;
 }
 
-FInstancedStruct USimpleGameplayAbilityComponent::GetStructAttributeValue(FGameplayTag AttributeTag, bool& WasFound)
+FInstancedStruct USimpleGameplayAbilityComponent::GetStructAttributeValue(FGameplayTag AttributeTag, bool& WasFound) const
 {
-	if (FStructAttribute* Attribute = GetStructAttribute(AttributeTag))
+	if (FStructAttribute* Attribute = const_cast<USimpleGameplayAbilityComponent*>(this)->GetStructAttribute(AttributeTag))
 	{
 		WasFound = true;
 		return Attribute->AttributeValue;
@@ -504,15 +601,13 @@ float USimpleGameplayAbilityComponent::ClampFloatAttributeValue(
 
 			if (Attribute.ValueLimits.UseMinCurrentValue && NewValue < Attribute.ValueLimits.MinCurrentValue)
 			{
-				Overflow = NewValue - Attribute.ValueLimits.MinCurrentValue;
+				Overflow = NewValue - Attribute.ValueLimits.MinCurrentValue; // Correct for negative overflow amount
 				return Attribute.ValueLimits.MinCurrentValue;
 			}
 
 			return NewValue;
-				
 		default:
-			SIMPLE_LOG(this, TEXT("[USimpleGameplayAbilityComponent::ClampFloatAttributeValue]: ValueType not supported."));
-			return 0.0f;
+			return NewValue;
 	}
 }
 
@@ -546,6 +641,16 @@ void USimpleGameplayAbilityComponent::CompareFloatAttributesAndSendEvents(const 
 	if (NewAttribute.ValueLimits.UseMinCurrentValue && OldAttribute.ValueLimits.MinCurrentValue != NewAttribute.ValueLimits.MinCurrentValue)
 	{
 		SendFloatAttributeChangedEvent(FDefaultTags::FloatAttributeMinCurrentValueChanged(), NewAttribute.AttributeTag, EAttributeValueType::MinCurrentValue, NewAttribute.ValueLimits.MinCurrentValue);
+	}
+
+	if (OldAttribute.BaseRegenRate != NewAttribute.BaseRegenRate)
+	{
+		SendFloatAttributeChangedEvent(FDefaultTags::FloatAttributeBaseRegenRateChanged(), NewAttribute.AttributeTag, EAttributeValueType::BaseRegeneration, NewAttribute.BaseRegenRate);
+	}
+
+	if (OldAttribute.CurrentRegenRate != NewAttribute.CurrentRegenRate)
+	{
+		SendFloatAttributeChangedEvent(FDefaultTags::FloatAttributeCurrentRegenRateChanged(), NewAttribute.AttributeTag, EAttributeValueType::CurrentRegeneration, NewAttribute.CurrentRegenRate);
 	}
 }
 

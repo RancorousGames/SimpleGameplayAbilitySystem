@@ -29,10 +29,10 @@ public:
 	AActor* AvatarActor;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "AbilityComponent|Abilities")
-	TArray<UAbilitySet*> AbilitySets;
+	TArray<TObjectPtr<UAbilitySet>> AbilitySets;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "AbilityComponent|Abilities")
-	TArray<UAbilityOverrideSet*> AbilityOverrideSets;
+	TArray<TObjectPtr<UAbilityOverrideSet>> AbilityOverrideSets;
 
 	UPROPERTY(Replicated)
 	TArray<FAbilityOverride> ActiveAbilityOverrides;
@@ -41,7 +41,7 @@ public:
 	TArray<TSubclassOf<USimpleGameplayAbility>> GrantedAbilities;
 	
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "AbilityComponent|Attributes")
-	TArray<USimpleAttributeSet*> AttributeSets;
+	TArray<TObjectPtr<USimpleAttributeSet>> AttributeSets;
 	
 	UPROPERTY(EditDefaultsOnly, Category = "AbilityComponent|Attributes", meta = (TitleProperty = "AttributeName"))
 	TArray<FFloatAttribute> FloatAttributes;
@@ -51,12 +51,12 @@ public:
 	UPROPERTY(VisibleAnywhere, Replicated, Category = "AbilityComponent|State", meta = (TitleProperty = "Attributes.AttributeName"))
 	FFloatAttributeContainer AuthorityFloatAttributes;
 	UPROPERTY(VisibleAnywhere, Category = "AbilityComponent|State", meta = (TitleProperty = "AttributeName"))
-	TArray<FFloatAttribute> LocalFloatAttributes;
+	TArray<FFloatAttribute> LocalFloatAttributes; // Client-side cache
 	
 	UPROPERTY(VisibleAnywhere, Replicated, Category = "AbilityComponent|State", meta = (TitleProperty = "Attributes.AttributeName"))
 	FStructAttributeContainer AuthorityStructAttributes;
 	UPROPERTY(VisibleAnywhere, meta = (TitleProperty = "AttributeName"), Category = "AbilityComponent|State")
-	TArray<FStructAttribute> LocalStructAttributes;
+	TArray<FStructAttribute> LocalStructAttributes; // Client-side cache
 	
 	UPROPERTY(VisibleAnywhere, Replicated, Category = "AbilityComponent|State", meta = (TitleProperty = "AbilityStates.AbilityClass"))
 	FAbilityStateContainer AuthorityAbilityStates;
@@ -98,8 +98,8 @@ public:
 		TSubclassOf<USimpleGameplayAbility> AbilityClass,
 		FInstancedStruct AbilityContext,
 		FGuid& AbilityID,
-		bool OverrideActivationPolicy,
-		EAbilityActivationPolicy ActivationPolicyOverride);
+		bool OverrideActivationPolicy = false,
+		EAbilityActivationPolicy ActivationPolicyOverride = EAbilityActivationPolicy::LocalOnly);
 
 	bool ActivateAbilityWithID(
 		const FGuid AbilityID,
@@ -113,7 +113,7 @@ public:
 	                           const FInstancedStruct& AbilityContext, EAbilityActivationPolicy ActivationPolicy, float ActivationTime);
 
 	UFUNCTION(BlueprintCallable, meta=(AdvancedDisplay=2), Category = "AbilityComponent|AbilityActivation")
-	bool CancelAbility(FGuid AbilityInstanceID, FInstancedStruct CancellationContext, bool ForceCancel);
+	bool CancelAbility(FGuid AbilityInstanceID, FInstancedStruct CancellationContext, bool ForceCancel = false);
 
 	UFUNCTION(BlueprintCallable, Category = "AbilityComponent|AbilityActivation")
 	TArray<FGuid> CancelAbilitiesWithTags(FGameplayTagContainer Tags, FInstancedStruct CancellationContext);
@@ -135,17 +135,25 @@ public:
 	void RemoveStructAttribute(FGameplayTag AttributeTag);
 
 	UFUNCTION(BlueprintCallable, BlueprintPure)
-	bool HasFloatAttribute(const FGameplayTag AttributeTag);
+	bool HasFloatAttribute(const FGameplayTag AttributeTag) const;
 
 	UFUNCTION(BlueprintCallable, BlueprintPure)
-	bool HasStructAttribute(const FGameplayTag AttributeTag);
+	bool HasStructAttribute(const FGameplayTag AttributeTag) const;
 	
-	UFUNCTION(BlueprintCallable, BlueprintPure, meta = (DeterminesOutputType = "AvatarClass", HideSelfPin))
-	float GetFloatAttributeValue(EAttributeValueType ValueType, FGameplayTag AttributeTag, bool& WasFound);
+	UFUNCTION(BlueprintCallable, BlueprintPure, meta = (DeterminesOutputType = "AvatarClass", HideSelfPin), Category = "AbilityComponent|Attributes")
+	float GetFloatAttributeValue(EAttributeValueType ValueType, FGameplayTag AttributeTag, bool& WasFound, bool bPredictIfClient = true) const;
+	
+    UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = "AbilityComponent|Attributes|Regeneration")
+    void StartFloatAttributeRegeneration(FGameplayTag AttributeTag);
+    
+    UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = "AbilityComponent|Attributes|Regeneration")
+    void StopFloatAttributeRegeneration(FGameplayTag AttributeTag);
 
+    // Sets discrete values. On server, accounts for regen before setting.
 	UFUNCTION(BlueprintCallable, meta = (ReturnDisplayName = "WasFound"), Category = "AbilityComponent|Attributes")
 	bool SetFloatAttributeValue(EAttributeValueType ValueType, FGameplayTag AttributeTag, float NewValue, float& Overflow);
 
+    // Increments discrete values. On server, accounts for regen before incrementing.
 	UFUNCTION(BlueprintCallable, Category = "AbilityComponent|Attributes")
 	bool IncrementFloatAttributeValue(EAttributeValueType ValueType, FGameplayTag AttributeTag, float Increment, float& Overflow);
 	
@@ -153,13 +161,13 @@ public:
 	bool OverrideFloatAttribute(FGameplayTag AttributeTag, FFloatAttribute NewAttribute);
 	
 	UFUNCTION(BlueprintCallable, BlueprintPure)
-	FInstancedStruct GetStructAttributeValue(FGameplayTag AttributeTag, bool& WasFound);
+	FInstancedStruct GetStructAttributeValue(FGameplayTag AttributeTag, bool& WasFound) const; 
 	
 	UFUNCTION(BlueprintCallable, meta = (ReturnDisplayName = "WasFound"), Category = "AbilityComponent|Attributes")
 	bool SetStructAttributeValue(FGameplayTag AttributeTag, FInstancedStruct NewValue);
 
 	UFUNCTION()
-	float ClampFloatAttributeValue(const FFloatAttribute& Attribute, EAttributeValueType ValueType, float NewValue, float& Overflow);
+	static float ClampFloatAttributeValue(const FFloatAttribute& Attribute, EAttributeValueType ValueType, float NewValue, float& Overflow);
 
 	UFUNCTION()
 	void CompareFloatAttributesAndSendEvents(const FFloatAttribute& OldAttribute, const FFloatAttribute& NewAttribute);
@@ -205,7 +213,7 @@ public:
 	 * @param Payload Optional payload that gets sent with the tag added event
 	 */
 	UFUNCTION(BlueprintCallable, Category = "AbilityComponent|Tags", meta = (AdvancedDisplay=1))
-	void AddGameplayTag(FGameplayTag Tag, FInstancedStruct Payload);
+	void AddGameplayTag(FGameplayTag Tag, FInstancedStruct Payload = FInstancedStruct()); 
 
 	/**
 	 * Removes a gameplay tag from this component. Upon being removed a tag removed event is sent to the event system.
@@ -214,7 +222,7 @@ public:
 	 * @param Payload Optional payload that gets sent with the tag removed event
 	 */
 	UFUNCTION(BlueprintCallable, Category = "AbilityComponent|Tags", meta = (AdvancedDisplay=1))
-	void RemoveGameplayTag(FGameplayTag Tag, FInstancedStruct Payload);
+	void RemoveGameplayTag(FGameplayTag Tag, FInstancedStruct Payload = FInstancedStruct());
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "AbilityComponent|Tags")
 	bool HasGameplayTag(FGameplayTag Tag) const;
@@ -227,7 +235,7 @@ public:
 	
 	/* Replicated Event Functions */
 	
-	UFUNCTION(BlueprintCallable, Category = "AbilityComponent|Events", meta=(AutoCreateRefTerm = "ListenerFilter"))
+	UFUNCTION(BlueprintCallable, Category = "AbilityComponent|Events", meta=(AutoCreateRefTerm = "ListenerFilter,Payload")) 
 	void SendEvent(
 		FGameplayTag EventTag, FGameplayTag DomainTag, FInstancedStruct Payload,
 		UObject* Sender, TArray<UObject*> ListenerFilter, ESimpleEventReplicationPolicy ReplicationPolicy);
@@ -285,6 +293,8 @@ public:
 	virtual double GetServerTime_Implementation() const;
 
 	FAbilityState* GetAbilityState(FGuid AbilityID, bool IsAuthorityState);
+    const FAbilityState* GetAbilityState(FGuid AbilityID, bool IsAuthorityState) const;
+
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, BlueprintCallable, Category = "AbilityComponent|Utility")
 	USimpleAttributeHandler* GetAttributeHandler(const FGameplayTag& AttributeTag);
@@ -293,12 +303,14 @@ public:
 	USimpleAttributeHandler* GetAttributeHandlerAs(FGameplayTag AttributeTag, TSubclassOf<USimpleAttributeHandler> AttributeHandlerClass);
 	
 	USimpleAttributeHandler* GetStructAttributeHandlerInstance(TSubclassOf<USimpleAttributeHandler> HandlerClass);
+    const USimpleAttributeHandler* GetStructAttributeHandlerInstance(TSubclassOf<USimpleAttributeHandler> HandlerClass) const; 
 
 	UFUNCTION(BlueprintCallable, Category = "AbilityComponent|Utility")
 	bool SetAbilityStatus(FGuid AbilityID, EAbilityStatus NewStatus);
 
 	/* Called by multiple instance abilities to set themselves up for deletion once the ability is over */
 	void RemoveInstancedAbility(USimpleGameplayAbility* AbilityToRemove);
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
@@ -323,24 +335,31 @@ protected:
 		FGuid AbilityID, EAbilityActivationPolicy ActivationPolicy, const TSubclassOf<USimpleGameplayAbility>& AbilityClass,
 		const FInstancedStruct& ActivationContext, bool IsAuthorityState, float ActivationTime = -1);
 
+    // Server-side helper to calculate current value including regeneration
+    float GetAuthoritativeCurrentValueWithRegen(const FFloatAttribute& Attribute, EAttributeValueType ValueType) const;
+
+
 	UPROPERTY(VisibleAnywhere, Replicated, Category = "AbilityComponent|State")
 	FGameplayTagCounterContainer AuthorityGameplayTags;
 	UPROPERTY(VisibleAnywhere, Category = "AbilityComponent|State")
 	TArray<FGameplayTagCounter> LocalGameplayTags;
 	
 	USimpleGameplayAbility* GetGameplayAbilityInstance(FGuid AbilityInstanceID);
+
 	USimpleAttributeModifier* GetAttributeModifierInstance(FGuid AttributeInstanceID);
+
 	TArray<FSimpleAbilitySnapshot>* GetLocalAttributeStateSnapshots(FGuid AttributeInstanceID);
+
 	USimpleGameplayAbility* GetAbilityInstance(TSubclassOf<USimpleGameplayAbility> AbilityClass);
 
 	UPROPERTY()
-	TArray<USimpleGameplayAbility*> InstancedAbilities;
+	TArray<TObjectPtr<USimpleGameplayAbility>> InstancedAbilities;
 	
 	UPROPERTY()
-	TArray<USimpleAttributeModifier*> InstancedAttributes;
+	TArray<TObjectPtr<USimpleAttributeModifier>> InstancedAttributes;
 
 	UPROPERTY()
-	TArray<USimpleAttributeHandler*> InstancedAttributeHandlers;
+	TArray<TObjectPtr<USimpleAttributeHandler>> InstancedAttributeHandlers;
 	
 	// Used to keep track of which events have been handled locally to avoid double event sending with multicast
 	TArray<FGuid> HandledEventIDs;

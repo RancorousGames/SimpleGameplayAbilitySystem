@@ -28,7 +28,7 @@ void USimpleGameplayAbilityComponent::BeginPlay()
 
 	SetIsReplicated(true);
 
-	// Listen for ability ended event
+	// Listen for ability ended event (existing code)
 	if (USimpleEventSubsystem* EventSubsystem = GetWorld()->GetGameInstance()->GetSubsystem<USimpleEventSubsystem>())
 	{
 		FGameplayTagContainer EventTags;
@@ -42,6 +42,7 @@ void USimpleGameplayAbilityComponent::BeginPlay()
 	
 	if (HasAuthority())
 	{
+		// (Existing server-side BeginPlay logic...)
 		// For abilities granted directly through the editor
 		for (const TSubclassOf<USimpleGameplayAbility> AbilityClass : GrantedAbilities)
 		{
@@ -118,6 +119,8 @@ void USimpleGameplayAbilityComponent::BeginPlay()
 	LocalStructAttributes = AuthorityStructAttributes.Attributes;
 
 	LocalGameplayTags = AuthorityGameplayTags.Tags;
+    LocalAbilityStates = AuthorityAbilityStates.AbilityStates;
+    LocalAttributeStates = AuthorityAttributeStates.AbilityStates;
 }
 
 void USimpleGameplayAbilityComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -1219,6 +1222,121 @@ void USimpleGameplayAbilityComponent::OnGameplayTagRemoved(const FGameplayTagCou
 		SendEvent(FDefaultTags::GameplayTagRemoved(), GameplayTag.GameplayTag, FInstancedStruct(), this, {}, ESimpleEventReplicationPolicy::NoReplication);
 	}
 }
+
+float USimpleGameplayAbilityComponent::GetAuthoritativeCurrentValueWithRegen(const FFloatAttribute& Attribute, EAttributeValueType ValueType) const
+{
+    // This function is designed for server-side use where HasAuthority() is true.
+    // Its correct usage should be ensured by the calling functions.
+
+    float Overflow = 0.f; // Dummy for ClampFloatAttributeValue
+
+    switch (ValueType)
+    {
+        case EAttributeValueType::CurrentValue:
+        {
+            if (Attribute.bIsRegenerating && Attribute.CurrentRegenRate != 0.f)
+            {
+                // Calculate time elapsed since the CurrentValue was last definitively set or regen params changed.
+                const double CurrentServerTime = GetServerTime(); // Component's GetServerTime()
+                const double ElapsedTime = FMath::Max(0.0, CurrentServerTime - Attribute.LastRegenParamsUpdateTime_Server);
+                
+                const float RegenAmount = Attribute.CurrentRegenRate * static_cast<float>(ElapsedTime);
+                const float TrueCurrentValue = Attribute.CurrentValue + RegenAmount;
+
+                // Return the calculated value, clamped by its limits.
+                return ClampFloatAttributeValue(Attribute, EAttributeValueType::CurrentValue, TrueCurrentValue, Overflow);
+            }
+            else
+            {
+                // Not regenerating or rate is zero, so the stored CurrentValue is authoritative.
+                return ClampFloatAttributeValue(Attribute, EAttributeValueType::CurrentValue, Attribute.CurrentValue, Overflow);
+            }
+        }
+        case EAttributeValueType::BaseValue:
+            return ClampFloatAttributeValue(Attribute, EAttributeValueType::BaseValue, Attribute.BaseValue, Overflow);
+        case EAttributeValueType::MaxCurrentValue:
+            // Return the limit if used, otherwise a sensible default (e.g., current value, or 0/FLT_MAX if appropriate for your game).
+            // Here, returning CurrentValue if limit is not used makes some sense as a fallback.
+            return Attribute.ValueLimits.UseMaxCurrentValue ? Attribute.ValueLimits.MaxCurrentValue : ClampFloatAttributeValue(Attribute, EAttributeValueType::CurrentValue, Attribute.CurrentValue, Overflow);
+        case EAttributeValueType::MinCurrentValue:
+            return Attribute.ValueLimits.UseMinCurrentValue ? Attribute.ValueLimits.MinCurrentValue : ClampFloatAttributeValue(Attribute, EAttributeValueType::CurrentValue, Attribute.CurrentValue, Overflow);
+        case EAttributeValueType::MaxBaseValue:
+            return Attribute.ValueLimits.UseMaxBaseValue ? Attribute.ValueLimits.MaxBaseValue : ClampFloatAttributeValue(Attribute, EAttributeValueType::BaseValue, Attribute.BaseValue, Overflow);
+        case EAttributeValueType::MinBaseValue:
+            return Attribute.ValueLimits.UseMinBaseValue ? Attribute.ValueLimits.MinBaseValue : ClampFloatAttributeValue(Attribute, EAttributeValueType::BaseValue, Attribute.BaseValue, Overflow);
+		case EAttributeValueType::BaseRegeneration:
+			return Attribute.BaseRegenRate;
+    	case EAttributeValueType::CurrentRegeneration:
+			return Attribute.CurrentRegenRate;
+    	default:
+            SIMPLE_LOG(this, FString::Printf(TEXT("[USimpleGameplayAbilityComponent::GetAuthoritativeCurrentValueWithRegen]: Unsupported ValueType %d requested."), static_cast<int32>(ValueType)));
+            return 0.0f;
+    }
+}
+
+void USimpleGameplayAbilityComponent::StartFloatAttributeRegeneration(FGameplayTag AttributeTag)
+{
+    if (!HasAuthority())
+    {
+        SIMPLE_LOG(this, FString::Printf(TEXT("[USimpleGameplayAbilityComponent::StartFloatAttributeRegeneration] called on client for attribute %s. Ignored."), *AttributeTag.ToString()));
+        return;
+    }
+
+    FFloatAttribute* Attribute = GetFloatAttribute(AttributeTag);
+    if (!Attribute)
+    {
+        SIMPLE_LOG(this, FString::Printf(TEXT("[USimpleGameplayAbilityComponent::StartFloatAttributeRegeneration] Attribute %s not found on server."), *AttributeTag.ToString()));
+        return;
+    }
+
+    if (Attribute->bIsRegenerating)
+    {
+        // If already regenerating, ensure CurrentValue is up-to-date and refresh timestamp.
+        Attribute->CurrentValue = GetAuthoritativeCurrentValueWithRegen(*Attribute, EAttributeValueType::CurrentValue);
+        Attribute->LastRegenParamsUpdateTime_Server = GetServerTime();
+        AuthorityFloatAttributes.MarkItemDirty(*Attribute);
+        return;
+    }
+
+    Attribute->bIsRegenerating = true;
+    // CurrentValue is the baseline from which regeneration starts.
+    // If a rate was set previously while bIsRegenerating was false, that rate now applies from this CurrentValue.
+    Attribute->LastRegenParamsUpdateTime_Server = GetServerTime();
+
+    AuthorityFloatAttributes.MarkItemDirty(*Attribute);
+}
+
+void USimpleGameplayAbilityComponent::StopFloatAttributeRegeneration(FGameplayTag AttributeTag)
+{
+    if (!HasAuthority())
+    {
+        SIMPLE_LOG(this, FString::Printf(TEXT("[USimpleGameplayAbilityComponent::StopFloatAttributeRegeneration] called on client for attribute %s. Ignored."), *AttributeTag.ToString()));
+        return;
+    }
+
+    FFloatAttribute* Attribute = GetFloatAttribute(AttributeTag);
+    if (!Attribute)
+    {
+        SIMPLE_LOG(this, FString::Printf(TEXT("[USimpleGameplayAbilityComponent::StopFloatAttributeRegeneration] Attribute %s not found on server."), *AttributeTag.ToString()));
+        return;
+    }
+
+    if (!Attribute->bIsRegenerating)
+    {
+        return;
+    }
+
+    Attribute->CurrentValue = GetAuthoritativeCurrentValueWithRegen(*Attribute, EAttributeValueType::CurrentValue);
+    Attribute->bIsRegenerating = false;
+    // Optionally, you might want to set CurrentRegenRate to 0 here as well,
+    // if stopping regeneration should always zero out the rate.
+    // Attribute->CurrentRegenRate = 0.f; 
+    Attribute->LastRegenParamsUpdateTime_Server = GetServerTime();
+
+    AuthorityFloatAttributes.MarkItemDirty(*Attribute);
+}
+
+
 
 void USimpleGameplayAbilityComponent::GetLifetimeReplicatedProps(TArray<class FLifetimeProperty>& OutLifetimeProps) const
 {

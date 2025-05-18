@@ -27,9 +27,11 @@ class FDefaultTags
 		static FGameplayTag FloatAttributeBaseValueChanged() { return FindTag("SimpleGAS.Events.Attributes.Changed.Float.BaseValue"); }
 		static FGameplayTag FloatAttributeMinBaseValueChanged() { return FindTag("SimpleGAS.Events.Attributes.Changed.Float.MinBaseValue"); }
 		static FGameplayTag FloatAttributeMaxBaseValueChanged() { return FindTag("SimpleGAS.Events.Attributes.Changed.Float.MaxBaseValue"); }
+		static FGameplayTag FloatAttributeBaseRegenRateChanged() { return FindTag("SimpleGAS.Events.Attributes.Changed.Float.BaseRegenRate"); }
 		static FGameplayTag FloatAttributeCurrentValueChanged() { return FindTag("SimpleGAS.Events.Attributes.Changed.Float.CurrentValue"); }
 		static FGameplayTag FloatAttributeMinCurrentValueChanged() { return FindTag("SimpleGAS.Events.Attributes.Changed.Float.MinCurrentValue"); }
 		static FGameplayTag FloatAttributeMaxCurrentValueChanged() { return FindTag("SimpleGAS.Events.Attributes.Changed.Float.MaxCurrentValue"); }
+		static FGameplayTag FloatAttributeCurrentRegenRateChanged() { return FindTag("SimpleGAS.Events.Attributes.Changed.Float.CurrentRegenRate"); }
 		static FGameplayTag FloatAttributeRemoved() { return FindTag("SimpleGAS.Events.Attributes.Removed.Float"); }
 	
 		static FGameplayTag StructAttributeAdded() { return FindTag("SimpleGAS.Events.Attributes.Added.Struct"); }
