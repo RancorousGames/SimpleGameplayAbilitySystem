@@ -56,6 +56,7 @@ enum class EAttributeValueType : uint8
 	MinCurrentValue,
 	MaxBaseValue,
 	MinBaseValue,
+	CurrentValueRatio, // Current accounting for min and max value
 	BaseRegeneration,
 	CurrentRegeneration,
 };

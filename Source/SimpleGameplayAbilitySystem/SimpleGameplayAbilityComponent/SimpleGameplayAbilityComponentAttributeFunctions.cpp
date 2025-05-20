@@ -357,6 +357,18 @@ float USimpleGameplayAbilityComponent::GetFloatAttributeValue(EAttributeValueTyp
 				return Attribute->ValueLimits.UseMaxBaseValue ? Attribute->ValueLimits.MaxBaseValue : 0.f;
 			case EAttributeValueType::MinBaseValue:
 				return Attribute->ValueLimits.UseMinBaseValue ? Attribute->ValueLimits.MinBaseValue : 0.f;
+			case EAttributeValueType::CurrentValueRatio:
+			{
+				if (Attribute->ValueLimits.UseMinCurrentValue && Attribute->ValueLimits.UseMaxCurrentValue)
+				{
+					float range = Attribute->ValueLimits.MaxCurrentValue - Attribute->ValueLimits.MinCurrentValue;
+					return range != 0.f ? (Attribute->CurrentValue - Attribute->ValueLimits.MinCurrentValue) / range : 0.f;
+				}
+				if (Attribute->ValueLimits.UseMaxCurrentValue)
+					return Attribute->ValueLimits.MaxCurrentValue != 0.f ? Attribute->CurrentValue / Attribute->ValueLimits.MaxCurrentValue : 0.f;
+
+				return Attribute->BaseValue != 0.f ? Attribute->CurrentValue / Attribute->BaseValue : 0.f;
+			}
 			case EAttributeValueType::BaseRegeneration:
 				return Attribute->BaseRegenRate;
 			case EAttributeValueType::CurrentRegeneration:
@@ -427,6 +439,20 @@ bool USimpleGameplayAbilityComponent::SetFloatAttributeValue(EAttributeValueType
 			Attribute->ValueLimits.MinBaseValue = ClampedValue;
 			SendFloatAttributeChangedEvent(FDefaultTags::FloatAttributeMinBaseValueChanged(), AttributeTag, ValueType, ClampedValue);
 			break;
+		case EAttributeValueType::CurrentValueRatio:
+		{
+			float min = Attribute->ValueLimits.UseMinCurrentValue ? Attribute->ValueLimits.MinCurrentValue : 0.f;
+			float max = Attribute->ValueLimits.UseMaxCurrentValue ? Attribute->ValueLimits.MaxCurrentValue : Attribute->BaseValue;
+			float range = max - min;
+
+			Attribute->CurrentValue = range != 0.f ? FMath::Clamp(NewValue, 0.f, 1.f) * range + min : min;
+
+			if (HasAuthority())
+				Attribute->LastRegenParamsUpdateTime_Server = GetServerTime();
+
+			SendFloatAttributeChangedEvent(FDefaultTags::FloatAttributeCurrentValueChanged(), AttributeTag, EAttributeValueType::CurrentValue, Attribute->CurrentValue);
+		}
+		break;
 		case EAttributeValueType::BaseRegeneration:
 			Attribute->BaseRegenRate = NewValue;
 			SendFloatAttributeChangedEvent(FDefaultTags::FloatAttributeBaseRegenRateChanged(), AttributeTag, ValueType, NewValue);

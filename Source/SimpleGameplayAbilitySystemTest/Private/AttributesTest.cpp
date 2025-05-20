@@ -274,7 +274,33 @@ public:
 		Res &= Test->TestNearlyEqual(
 			TEXT("BasicManipulation: Overflow after set below min should be -5.0f (Value - Min)"), Overflow, -5.0f,
 			Tolerance); // Overflow can be negative
+	
+		// --- Test GetFloatAttributeValue (CurrentValueRatio) ---
+		// CurrentValue is 10.0f, Min = 10.0f, Max = 100.0f → ratio = (10 - 10) / (100 - 10) = 0.0
+		Value = Context.SGASComponent->GetFloatAttributeValue(EAttributeValueType::CurrentValueRatio, TestAttributeTag, bWasFound);
+		Res &= Test->TestTrue(TEXT("BasicManipulation: Attribute should be found for ratio read"), bWasFound);
+		Res &= Test->TestNearlyEqual(
+			TEXT("BasicManipulation: Ratio should be 0.0f when CurrentValue is at Min"), Value, 0.0f, Tolerance);
 
+		// --- Test SetFloatAttributeValue (CurrentValueRatio) to midpoint ---
+		// Setting ratio = 0.5 → Expected CurrentValue = 10 + 0.5 * (100 - 10) = 55.0
+		Context.SGASComponent->SetFloatAttributeValue(EAttributeValueType::CurrentValueRatio, TestAttributeTag, 0.5f, Overflow);
+		Value = Context.SGASComponent->GetFloatAttributeValue(EAttributeValueType::CurrentValue, TestAttributeTag, bWasFound);
+		Res &= Test->TestTrue(TEXT("BasicManipulation: Attribute should be found after ratio set"), bWasFound);
+		Res &= Test->TestNearlyEqual(
+			TEXT("BasicManipulation: CurrentValue after ratio set to 0.5 should be 55.0f"), Value, 55.0f, Tolerance);
+
+		// --- Test SetFloatAttributeValue (CurrentValueRatio) above 1.0 (should clamp) ---
+		Context.SGASComponent->SetFloatAttributeValue(EAttributeValueType::CurrentValueRatio, TestAttributeTag, 1.5f, Overflow);
+		Value = Context.SGASComponent->GetFloatAttributeValue(EAttributeValueType::CurrentValue, TestAttributeTag, bWasFound);
+		Res &= Test->TestNearlyEqual(
+			TEXT("BasicManipulation: Ratio set to 1.5 should clamp CurrentValue to Max (100.0f)"), Value, 100.0f, Tolerance);
+
+		// --- Test SetFloatAttributeValue (CurrentValueRatio) below 0.0 (should clamp) ---
+		Context.SGASComponent->SetFloatAttributeValue(EAttributeValueType::CurrentValueRatio, TestAttributeTag, -1.0f, Overflow);
+		Value = Context.SGASComponent->GetFloatAttributeValue(EAttributeValueType::CurrentValue, TestAttributeTag, bWasFound);
+		Res &= Test->TestNearlyEqual(
+			TEXT("BasicManipulation: Ratio set to -1.0 should clamp CurrentValue to Min (10.0f)"), Value, 10.0f, Tolerance);
 		
 		// --- Test RemoveFloatAttribute ---
 		DomainTag = TestAttributeTag; // Again here the domain is the attribute id

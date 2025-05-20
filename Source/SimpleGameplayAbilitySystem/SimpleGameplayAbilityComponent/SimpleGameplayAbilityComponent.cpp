@@ -1264,6 +1264,18 @@ float USimpleGameplayAbilityComponent::GetAuthoritativeCurrentValueWithRegen(con
             return Attribute.ValueLimits.UseMaxBaseValue ? Attribute.ValueLimits.MaxBaseValue : ClampFloatAttributeValue(Attribute, EAttributeValueType::BaseValue, Attribute.BaseValue, Overflow);
         case EAttributeValueType::MinBaseValue:
             return Attribute.ValueLimits.UseMinBaseValue ? Attribute.ValueLimits.MinBaseValue : ClampFloatAttributeValue(Attribute, EAttributeValueType::BaseValue, Attribute.BaseValue, Overflow);
+		case EAttributeValueType::CurrentValueRatio:
+        {
+        	if (Attribute.ValueLimits.UseMinCurrentValue && Attribute.ValueLimits.UseMaxCurrentValue)
+        	{
+        		float range = Attribute.ValueLimits.MaxCurrentValue - Attribute.ValueLimits.MinCurrentValue;
+        		return range != 0.f ? (Attribute.CurrentValue - Attribute.ValueLimits.MinCurrentValue) / range : 0.f;
+        	}
+        	if (Attribute.ValueLimits.UseMaxCurrentValue)
+        		return Attribute.ValueLimits.MaxCurrentValue != 0.f ? Attribute.CurrentValue / Attribute.ValueLimits.MaxCurrentValue : 0.f;
+
+        	return Attribute.BaseValue != 0.f ? Attribute.CurrentValue / Attribute.BaseValue : 0.f;
+        }
 		case EAttributeValueType::BaseRegeneration:
 			return Attribute.BaseRegenRate;
     	case EAttributeValueType::CurrentRegeneration:
