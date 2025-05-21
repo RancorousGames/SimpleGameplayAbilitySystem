@@ -138,7 +138,7 @@ public:
 	bool CanApplyModifierInternal(FInstancedStruct ModifierContext) const;
 	
 	UFUNCTION(BlueprintCallable, Category = "Attribute Modifier|Application")
-	bool ApplyModifier(USimpleGameplayAbilityComponent* Instigator, USimpleGameplayAbilityComponent* Target, FInstancedStruct ModifierContext);
+	virtual bool ApplyModifier(USimpleGameplayAbilityComponent* Instigator, USimpleGameplayAbilityComponent* Target, FInstancedStruct ModifierContext);
 
 	UFUNCTION(BlueprintCallable, Category = "Attribute Modifier|Application")
 	void ApplySideEffects(USimpleGameplayAbilityComponent* Instigator, USimpleGameplayAbilityComponent* Target, EAttributeModifierSideEffectTrigger EffectPhase);

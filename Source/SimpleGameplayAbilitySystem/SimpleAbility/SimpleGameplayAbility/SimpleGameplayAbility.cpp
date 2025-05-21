@@ -14,6 +14,10 @@ void USimpleGameplayAbility::PreActivate_Implementation(FInstancedStruct Activat
 {
 }
 
+void USimpleGameplayAbility::OnActivate_Implementation(FInstancedStruct ActivationContext)
+{
+}
+
 bool USimpleGameplayAbility::CanCancel_Implementation()
 {
 	return true;

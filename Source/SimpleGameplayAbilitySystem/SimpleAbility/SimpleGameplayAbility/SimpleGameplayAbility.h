@@ -142,7 +142,7 @@ public:
 	 * This is where the ability should do its main work.
 	 * @param ActivationContext The context passed to this ability when it was activated. Can be empty.
 	 */
-	UFUNCTION(BlueprintImplementableEvent)
+	UFUNCTION(BlueprintNativeEvent)
 	void OnActivate(FInstancedStruct ActivationContext);
 
 	UFUNCTION(BlueprintNativeEvent)
