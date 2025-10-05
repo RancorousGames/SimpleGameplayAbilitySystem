@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "SimpleGameplayAbilitySystem/Components/SimpleAttributeComponent/SimpleAttributeModifier/ModifierActions/Base/ModifierAction.h"
+#include "SimpleGameplayAbilitySystem/Components/SimpleAttributeComponent/SimpleAttributeModifier/ModifierActions/ModifierActionTypes.h"
 
 #include "CancelAbilityAction.generated.h"
 
@@ -18,4 +19,14 @@ public:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly)
 	FGameplayTagContainer CancelAbilitiesWithTags;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly)
+	EModifierActionComponentTarget ComponentTarget = EModifierActionComponentTarget::Target;
+
+	/* ModifierAction overrides */
+	virtual bool SupportsClientPrediction_Implementation() const override { return false; }
+	virtual FInstancedStruct ApplyAction_Implementation() override;
+
+private:
+	void CancelAbilitiesOnComponent(class USimpleAttributeComponent* AttributeComponent);
 };
