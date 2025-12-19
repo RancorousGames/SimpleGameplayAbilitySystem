@@ -360,6 +360,8 @@ float USimpleAttributeComponent::GetFloatAttributeValue(EFloatAttributeValueType
 		{
 			case EFloatAttributeValueType::BaseValue:
 				return Attribute->BaseValue;
+			case EFloatAttributeValueType::SyncedValue:
+				return Attribute->CurrentValue;
 			case EFloatAttributeValueType::CurrentValue:
 				return Attribute->CurrentValue;
 			case EFloatAttributeValueType::CurrentValueRatio:
@@ -429,9 +431,11 @@ bool USimpleAttributeComponent::SetFloatAttributeValue(EFloatAttributeValueType 
 			}
 			break;
 
+		case EFloatAttributeValueType::SyncedValue:
 		case EFloatAttributeValueType::CurrentValue:
 			OldValue = Attribute->CurrentValue;
 			Attribute->CurrentValue = ClampedValue;
+			Attribute->LastRegenParamsUpdateTime_Server = GetServerTime();
 			if (OldValue != ClampedValue)
 			{
 				OnFloatAttributeCurrentValueChanged.Broadcast(AttributeTag, OldValue, ClampedValue);
@@ -587,6 +591,7 @@ float USimpleAttributeComponent::ClampFloatAttributeValue(const FFloatAttribute&
 
 		return NewValue;
 
+	case EFloatAttributeValueType::SyncedValue:
 	case EFloatAttributeValueType::CurrentValue:
 		if (Attribute.ValueLimits.UseMaxCurrentValue && NewValue > Attribute.ValueLimits.MaxCurrentValue)
 		{
@@ -605,6 +610,18 @@ float USimpleAttributeComponent::ClampFloatAttributeValue(const FFloatAttribute&
 	case EFloatAttributeValueType::RegenRate:
 		// Regen has no min/max limit fields; only clamp to non-negative
 		return FMath::Max(0.f, NewValue);
+case EFloatAttributeValueType::CurrentValueRatio:
+		if (NewValue > 1.0f)
+		{
+			Overflow = NewValue - 1.0f;
+			return 1.0f;
+		}
+		if (NewValue < 0.0f)
+		{
+			Overflow = NewValue;
+			return 0.0f;
+		}
+		return NewValue;
 default:
 		SIMPLE_LOG(this, TEXT("[USimpleGameplayAbilityComponent::ClampFloatAttributeValue]: ValueType not supported."));
 		return 0.0f;
@@ -1263,7 +1280,7 @@ void USimpleAttributeComponent::OnAttributeModifierInitiallyApplied(USimpleAttri
 {
 	FAttributeModifierState NewState;
 	NewState.ModifierID = ModifierInstance->ModifierID;
-	NewState.ModifierContext = FInstancedStruct();
+	NewState.ModifierContext = ModifierInstance->ModifierContext;
 	NewState.ModifierMagnitude = ModifierInstance->ModifierMagnitude;
 	NewState.InstigatorAttributeComponent = ModifierInstance->InstigatorAttributeComponent;
 	NewState.TargetAttributeComponent = ModifierInstance->TargetAttributeComponent;
