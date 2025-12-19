@@ -34,6 +34,7 @@ UENUM(BlueprintType)
 enum class EFloatAttributeValueType : uint8
 {
 	CurrentValue,
+	CurrentValueRatio,
 	BaseValue,
 	MaxCurrentValue,
 	MinCurrentValue,
