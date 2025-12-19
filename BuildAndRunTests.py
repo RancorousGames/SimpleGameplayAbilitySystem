@@ -15,23 +15,25 @@ TEST_OUTPUT_FILE = "TestOutput.txt"
 
 # Define test categories and their full automation paths for SimpleGameplayAbilitySystem
 TEST_CATEGORIES = {
-    "attributes": [
-        "GameTests.SGAS.Attributes.BasicManipulation",
-        "GameTests.SGAS.Attributes.StructManipulation"
-    ],
     "minimal": [
         "GameTests.SGAS.Minimal.JustAdd"
     ],
-    "regen": [
-        "GameTests.SGAS.Regen.LazyEvaluation",
-        "GameTests.SGAS.Regen.Clamping"
-    ],
-    "all": [
+    "attributes": [
         "GameTests.SGAS.Attributes.BasicManipulation",
         "GameTests.SGAS.Attributes.StructManipulation",
-        "GameTests.SGAS.Minimal.JustAdd",
         "GameTests.SGAS.Regen.LazyEvaluation",
-        "GameTests.SGAS.Regen.Clamping"
+        "GameTests.SGAS.Regen.Clamping",
+        "GameTests.SGAS.Attributes.CurrentValueRatio.ReadWrite",
+        "GameTests.SGAS.Attributes.CurrentValueRatio.NoMax"
+    ],
+    "all": [
+        "GameTests.SGAS.Minimal.JustAdd",
+        "GameTests.SGAS.Attributes.BasicManipulation",
+        "GameTests.SGAS.Attributes.StructManipulation",
+        "GameTests.SGAS.Regen.LazyEvaluation",
+        "GameTests.SGAS.Regen.Clamping",
+        "GameTests.SGAS.Attributes.CurrentValueRatio.ReadWrite",
+        "GameTests.SGAS.Attributes.CurrentValueRatio.NoMax"
     ]
 }
 

@@ -354,6 +354,13 @@ float USimpleAttributeComponent::GetFloatAttributeValue(EFloatAttributeValueType
 				return Attribute->BaseValue;
 			case EFloatAttributeValueType::CurrentValue:
 				return Attribute->CurrentValue;
+			case EFloatAttributeValueType::CurrentValueRatio:
+			{
+				const float Denom = (Attribute->ValueLimits.UseMaxCurrentValue && Attribute->ValueLimits.MaxCurrentValue > 0.f)
+					? Attribute->ValueLimits.MaxCurrentValue
+					: 0.f;
+				return Denom > 0.f ? Attribute->CurrentValue / Denom : 0.f;
+			}
 			case EFloatAttributeValueType::MaxCurrentValue:
 				return Attribute->ValueLimits.MaxCurrentValue;
 			case EFloatAttributeValueType::MinCurrentValue:
@@ -475,6 +482,27 @@ bool USimpleAttributeComponent::SetFloatAttributeValue(EFloatAttributeValueType 
 			Attribute->CurrentRegenRate = FMath::Max(0.f, ClampedValue);
 			Attribute->LastRegenParamsUpdateTime_Server = GetServerTime();
 			break;
+
+		case EFloatAttributeValueType::CurrentValueRatio:
+		{
+			const float Denom = (Attribute->ValueLimits.UseMaxCurrentValue && Attribute->ValueLimits.MaxCurrentValue > 0.f)
+				? Attribute->ValueLimits.MaxCurrentValue
+				: 0.f;
+			if (Denom <= 0.f)
+			{
+				SIMPLE_LOG(this, TEXT("[USimpleAttributeComponent::SetFloatAttributeValue]: No valid MaxCurrentValue for ratio"));
+				return false;
+			}
+			const float RatioClamped = ClampedValue; // already clamped to [0,1] by ClampFloatAttributeValue
+			float OverflowUnits = 0.f;
+			const float TargetCurrent = RatioClamped * Denom;
+			const bool bOk = SetFloatAttributeValue(EFloatAttributeValueType::CurrentValue, AttributeTag, TargetCurrent, OverflowUnits);
+			// Convert overflow back to ratio delta based on the achieved current value
+			bool bDummyFound = false;
+			const float NewCurrent = GetFloatAttributeValue(EFloatAttributeValueType::CurrentValue, AttributeTag, bDummyFound);
+			Overflow = RatioClamped - (bDummyFound && Denom > 0.f ? NewCurrent / Denom : 0.f);
+			return bOk;
+		}
 	}
 
 	if (HasAuthority())

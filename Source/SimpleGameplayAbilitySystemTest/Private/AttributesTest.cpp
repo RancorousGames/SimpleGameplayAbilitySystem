@@ -159,6 +159,71 @@ bool FAttributesTest_BasicManipulation::RunTest(const FString& Parameters)
 	return Res;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAttributesTest_CurrentValueRatio_ReadWrite, TestNamePrefix ".CurrentValueRatio.ReadWrite", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAttributesTest_CurrentValueRatio_ReadWrite::RunTest(const FString& Parameters)
+{
+	FAttributesTestContext Context(TEXT(".CurrentValueRatio.ReadWrite"));
+	FDebugTestResult Res;
+	if (!Context.AttributeComponent) return false;
+
+	// Ensure attribute exists with max current 100
+	FFloatAttribute A;
+	A.AttributeName = TEXT("RatioAttr");
+	A.AttributeTag = TestAttributeTag;
+	A.BaseValue = 100.f;
+	A.CurrentValue = 50.f;
+	A.ValueLimits.UseMaxCurrentValue = true;
+	A.ValueLimits.MaxCurrentValue = 100.f;
+	Context.AttributeComponent->AddFloatAttribute(A, /*Override*/true);
+
+	bool bFound = false;
+	const float Ratio = Context.AttributeComponent->GetFloatAttributeValue(EFloatAttributeValueType::CurrentValueRatio, TestAttributeTag, bFound);
+	Res &= TestTrue(TEXT("CVR: Attribute found"), bFound);
+	Res &= TestNearlyEqual(TEXT("CVR: Initial ratio is 0.5"), Ratio, 0.5f, 0.001f);
+
+	// Set ratio to 0.8 -> current should become 80
+	float Overflow = 0.f;
+	const bool bSetOk = Context.AttributeComponent->SetFloatAttributeValue(EFloatAttributeValueType::CurrentValueRatio, TestAttributeTag, 0.8f, Overflow);
+	Res &= TestTrue(TEXT("CVR: Set ratio ok"), bSetOk);
+	Res &= TestNearlyEqual(TEXT("CVR: No ratio overflow on 0.8"), Overflow, 0.0f, 0.0001f);
+	const float Curr = Context.AttributeComponent->GetFloatAttributeValue(EFloatAttributeValueType::CurrentValue, TestAttributeTag, bFound);
+	Res &= TestNearlyEqual(TEXT("CVR: Current now 80"), Curr, 80.f, 0.001f);
+
+	// Set ratio to 1.2 -> clamps to 1.0, overflow positive ~0.2
+	Overflow = 0.f;
+	const bool bSetClamp = Context.AttributeComponent->SetFloatAttributeValue(EFloatAttributeValueType::CurrentValueRatio, TestAttributeTag, 1.2f, Overflow);
+	Res &= TestTrue(TEXT("CVR: Set ratio >1 ok (clamped)"), bSetClamp);
+	Res &= TestNearlyEqual(TEXT("CVR: Overflow ratio ~0.2"), Overflow, 0.2f, 0.01f);
+	const float Curr2 = Context.AttributeComponent->GetFloatAttributeValue(EFloatAttributeValueType::CurrentValue, TestAttributeTag, bFound);
+	Res &= TestNearlyEqual(TEXT("CVR: Current now 100"), Curr2, 100.f, 0.001f);
+
+	return Res;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAttributesTest_CurrentValueRatio_NoMax, TestNamePrefix ".CurrentValueRatio.NoMax", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAttributesTest_CurrentValueRatio_NoMax::RunTest(const FString& Parameters)
+{
+	FAttributesTestContext Context(TEXT(".CurrentValueRatio.NoMax"));
+	FDebugTestResult Res;
+	if (!Context.AttributeComponent) return false;
+
+	FFloatAttribute A;
+	A.AttributeName = TEXT("NoMaxAttr");
+	A.AttributeTag = TestAttributeTag;
+	A.BaseValue = 100.f;
+	A.CurrentValue = 50.f;
+	A.ValueLimits.UseMaxCurrentValue = false; // no max
+	Context.AttributeComponent->AddFloatAttribute(A, /*Override*/true);
+
+	float Overflow = 0.f;
+	const bool bSetOk = Context.AttributeComponent->SetFloatAttributeValue(EFloatAttributeValueType::CurrentValueRatio, TestAttributeTag, 0.5f, Overflow);
+	Res &= TestFalse(TEXT("CVR: Setting ratio without max should fail"), bSetOk);
+
+	return Res;
+}
+
 // Test case for Struct Attributes
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAttributesTest_StructManipulation, TestNamePrefix ".StructManipulation", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
