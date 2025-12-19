@@ -10,6 +10,7 @@
 #include "SimpleGameplayAbilitySystem/DefaultTags/DefaultTags.h"
 #include "SimpleGameplayAbilitySystem/SimpleEventSubsystem/SimpleEventSubsystem.h"
 #include "TimerManager.h"
+#include <limits>
 
 USimpleAttributeComponent::USimpleAttributeComponent()
 {
@@ -361,6 +362,8 @@ float USimpleAttributeComponent::GetFloatAttributeValue(EFloatAttributeValueType
 				return Attribute->ValueLimits.MaxBaseValue;
 			case EFloatAttributeValueType::MinBaseValue:
 				return Attribute->ValueLimits.MinBaseValue;
+			case EFloatAttributeValueType::RegenRate:
+				return Attribute->CurrentRegenRate;
 			default:
 				SIMPLE_LOG(this, FString::Printf(
 					           TEXT(
@@ -464,6 +467,14 @@ bool USimpleAttributeComponent::SetFloatAttributeValue(EFloatAttributeValueType 
 				OnFloatAttributeMinBaseValueChanged.Broadcast(AttributeTag, OldValue, ClampedValue);
 			}
 			break;
+
+		case EFloatAttributeValueType::RegenRate:
+			OldValue = Attribute->CurrentRegenRate;
+			// Materialize before changing regen to avoid discontinuities
+			MaterializeFloat(AttributeTag);
+			Attribute->CurrentRegenRate = FMath::Max(0.f, ClampedValue);
+			Attribute->LastRegenParamsUpdateTime_Server = GetServerTime();
+			break;
 	}
 
 	if (HasAuthority())
@@ -555,7 +566,10 @@ float USimpleAttributeComponent::ClampFloatAttributeValue(const FFloatAttribute&
 
 		return NewValue;
 
-	default:
+	case EFloatAttributeValueType::RegenRate:
+		// Regen has no min/max limit fields; only clamp to non-negative
+		return FMath::Max(0.f, NewValue);
+default:
 		SIMPLE_LOG(this, TEXT("[USimpleGameplayAbilityComponent::ClampFloatAttributeValue]: ValueType not supported."));
 		return 0.0f;
 	}
@@ -615,6 +629,85 @@ FStructAttribute* USimpleAttributeComponent::GetStructAttribute(FGameplayTag Att
 	}
 
 	return nullptr;
+}
+
+/* Regeneration Helpers */
+
+float USimpleAttributeComponent::GetEffectiveFloatCurrentValue(FGameplayTag AttributeTag, bool& WasFound, bool bIgnoreRegen)
+{
+	const FFloatAttribute* A = GetFloatAttribute(AttributeTag);
+	if (!A)
+	{
+		WasFound = false;
+		return 0.f;
+	}
+	WasFound = true;
+	if (bIgnoreRegen || !A->bIsRegenerating || A->CurrentRegenRate <= 0.f)
+	{
+		return A->CurrentValue;
+	}
+	const double Now = GetServerTime();
+	const double Dt = FMath::Max(0.0, Now - A->LastRegenParamsUpdateTime_Server);
+	const float Target = (A->ValueLimits.UseMaxCurrentValue ? A->ValueLimits.MaxCurrentValue : std::numeric_limits<float>::max());
+	const float Effective = FMath::Min(A->CurrentValue + A->CurrentRegenRate * static_cast<float>(Dt), Target);
+	return Effective;
+}
+
+void USimpleAttributeComponent::MaterializeFloat(FGameplayTag AttributeTag)
+{
+	FFloatAttribute* A = GetFloatAttribute(AttributeTag);
+	if (!A)
+	{
+		return;
+	}
+	bool bFound = false;
+	const float Effective = GetEffectiveFloatCurrentValue(AttributeTag, bFound, /*bIgnoreRegen=*/false);
+	if (!bFound)
+	{
+		return;
+	}
+	if (!FMath::IsNearlyEqual(Effective, A->CurrentValue))
+	{
+		const float Old = A->CurrentValue;
+		A->CurrentValue = Effective;
+		OnFloatAttributeCurrentValueChanged.Broadcast(AttributeTag, Old, Effective);
+	}
+	A->LastRegenParamsUpdateTime_Server = GetServerTime();
+	if (HasAuthority())
+	{
+		AuthorityFloatAttributes.MarkItemDirty(*A);
+	}
+}
+
+void USimpleAttributeComponent::StartFloatRegen(FGameplayTag AttributeTag)
+{
+	FFloatAttribute* A = GetFloatAttribute(AttributeTag);
+	if (!A)
+	{
+		return;
+	}
+	MaterializeFloat(AttributeTag);
+	A->bIsRegenerating = true;
+	A->LastRegenParamsUpdateTime_Server = GetServerTime();
+	if (HasAuthority())
+	{
+		AuthorityFloatAttributes.MarkItemDirty(*A);
+	}
+}
+
+void USimpleAttributeComponent::StopFloatRegen(FGameplayTag AttributeTag)
+{
+	FFloatAttribute* A = GetFloatAttribute(AttributeTag);
+	if (!A)
+	{
+		return;
+	}
+	MaterializeFloat(AttributeTag);
+	A->bIsRegenerating = false;
+	if (HasAuthority())
+	{
+		AuthorityFloatAttributes.MarkItemDirty(*A);
+	}
 }
 
 /* Struct Attributes */

@@ -144,6 +144,19 @@ struct FFloatAttribute : public FFastArraySerializerItem
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	FValueLimits ValueLimits;
 
+	// Regeneration parameters
+	// Designer-editable default regen rate; replicated via the Attribute FastArray
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	float CurrentRegenRate = 0.0f;
+
+	// Whether this attribute is currently regenerating; replicated
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
+	bool bIsRegenerating = false;
+
+	// Not exposed to designers; internal timestamp for lazy regen calculations
+	UPROPERTY()
+	double LastRegenParamsUpdateTime_Server = 0.0;
+
 	void PreReplicatedRemove(const struct FFloatAttributeContainer& InArraySerializer);
 	void PostReplicatedAdd(const struct FFloatAttributeContainer& InArraySerializer);
 	void PostReplicatedChange(const struct FFloatAttributeContainer& InArraySerializer);

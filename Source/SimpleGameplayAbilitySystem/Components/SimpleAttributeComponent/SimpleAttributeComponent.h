@@ -387,6 +387,16 @@ public:
 	void OnModifierStackCountChanged(USimpleAttributeModifier* Modifier);
 
 	/* Attribute Functions */
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "AttributeComponent|Attributes|Regen")
+	float GetEffectiveFloatCurrentValue(FGameplayTag AttributeTag, bool& WasFound, bool bIgnoreRegen = false);
+
+	UFUNCTION(BlueprintCallable, Category = "AttributeComponent|Attributes|Regen")
+	void StartFloatRegen(FGameplayTag AttributeTag);
+
+	UFUNCTION(BlueprintCallable, Category = "AttributeComponent|Attributes|Regen")
+	void StopFloatRegen(FGameplayTag AttributeTag);
+
 	
 	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = "AttributeComponent|Attributes", meta = (AdvancedDisplay=1))
 	void AddFloatAttribute(FFloatAttribute AttributeToAdd, bool OverrideValuesIfExists = true );
@@ -506,6 +516,9 @@ protected:
 	FTimerHandle CleanupTimerHandle;
 
 private:
+
+    // Materialize regen into CurrentValue before authoritative writes or when starting/stopping regen
+    void MaterializeFloat(FGameplayTag AttributeTag);
 
 	/** Event IDs that were sent locally to prevent duplicate processing from multicasts (NOT replicated) */
 	TSet<FGuid> LocallySentEventIDs;
