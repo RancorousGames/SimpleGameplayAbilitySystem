@@ -13,6 +13,8 @@ void USimpleGameplayAbility::Initialize(USimpleGameplayAbilityComponent* Activat
 	// Cache a reference to the attribute component
 	AttributeComponent = ActivatingAttributeComponent;
 	ActivationTime = AbilityComponent->GetServerTime();
+
+	OnAbilityInitialized();
 }
 
 bool USimpleGameplayAbility::CanActivateInternal()

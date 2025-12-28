@@ -102,6 +102,10 @@ public:
 	
 	/* Overridable Functions */
 
+	UFUNCTION(BlueprintNativeEvent, Category = "Ability")
+	void OnAbilityInitialized();
+	virtual void OnAbilityInitialized_Implementation() {}
+
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "Ability")
 	bool CanActivate(const FInstancedStruct& ActivationContext);
 	virtual bool CanActivate_Implementation(const FInstancedStruct& ActivationContext) { return true; }
