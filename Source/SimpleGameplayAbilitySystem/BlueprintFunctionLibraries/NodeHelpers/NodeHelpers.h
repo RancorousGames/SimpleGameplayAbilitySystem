@@ -4,7 +4,7 @@
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "SimpleGameplayAbilitySystem/Module/SimpleGameplayAbilitySystem.h"
 #include "SimpleGameplayAbilitySystem/Components/SimpleGameplayAbilityComponent/SimpleGameplayAbilityComponent.h"
-#include "InstancedStruct.h"
+#include "StructUtils/InstancedStruct.h"
 #include "NodeHelpers.generated.h"
 
 UENUM(BlueprintType)
