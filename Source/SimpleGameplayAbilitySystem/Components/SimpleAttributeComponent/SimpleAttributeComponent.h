@@ -419,6 +419,10 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintPure, meta = (DeterminesOutputType = "AvatarClass", HideSelfPin))
 	float GetFloatAttributeValue(EFloatAttributeValueType ValueType, FGameplayTag AttributeTag, bool& WasFound);
 
+	/** Current value interpolated from the replicated regeneration parameters and server time. */
+	UFUNCTION(BlueprintPure, Category = "AttributeComponent|Attributes")
+	float GetEffectiveFloatCurrentValue(FGameplayTag AttributeTag, bool& WasFound);
+
 	UFUNCTION(BlueprintCallable, meta = (ReturnDisplayName = "WasFound"), Category = "AttributeComponent|Attributes")
 	bool SetFloatAttributeValue(EFloatAttributeValueType ValueType, FGameplayTag AttributeTag, float NewValue, float& Overflow);
 

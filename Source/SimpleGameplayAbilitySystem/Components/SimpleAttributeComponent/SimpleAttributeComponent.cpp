@@ -349,6 +349,11 @@ bool USimpleAttributeComponent::HasStructAttribute(const FGameplayTag AttributeT
 	return false;
 }
 
+float USimpleAttributeComponent::GetEffectiveFloatCurrentValue(FGameplayTag AttributeTag, bool& WasFound)
+{
+	return GetFloatAttributeValue(EFloatAttributeValueType::CurrentValue, AttributeTag, WasFound);
+}
+
 float USimpleAttributeComponent::GetFloatAttributeValue(EFloatAttributeValueType ValueType, FGameplayTag AttributeTag,
                                                         bool& WasFound)
 {
