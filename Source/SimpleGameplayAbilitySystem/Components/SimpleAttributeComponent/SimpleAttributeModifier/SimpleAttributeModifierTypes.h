@@ -163,7 +163,7 @@ struct FAttributeModifierActionScratchPadValue
 	FGameplayTag ScratchpadTag;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	float ScratchpadValue;
+	float ScratchpadValue{};
 	
 	bool operator==(const FAttributeModifierActionScratchPadValue& Other) const
 	{
@@ -227,7 +227,7 @@ struct FModifierActionResult
 	GENERATED_BODY()
 
 	UPROPERTY()
-	int32 ActionIndex;
+	int32 ActionIndex{};
 
 	UPROPERTY()
 	TSubclassOf<UModifierAction> ActionClass;
@@ -386,19 +386,19 @@ struct FAttributeModifierState : public FFastArraySerializerItem
 	float ModifierMagnitude = 0.0f;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
-	EModifierStatus ModifierStatus;
+	EModifierStatus ModifierStatus{};
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
-	USimpleAttributeComponent* InstigatorAttributeComponent;
+	USimpleAttributeComponent* InstigatorAttributeComponent = nullptr;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
-	USimpleAttributeComponent* TargetAttributeComponent;
+	USimpleAttributeComponent* TargetAttributeComponent = nullptr;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
-	float ApplicationTimestamp;
+	float ApplicationTimestamp{};
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
-	float EndedTimestamp;
+	float EndedTimestamp{};
 
 	/** Current stack count for consolidated stacking (1 for non-stacking modifiers) */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
@@ -494,7 +494,7 @@ struct FAttributeModifierMutation : public FFastArraySerializerItem
 	TSubclassOf<USimpleAttributeModifier> ModifierClass;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
-	float MutationTimestamp;
+	float MutationTimestamp{};
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
 	FModifierActionStackResults ActionStackResult;
@@ -595,7 +595,7 @@ struct FPredictedModifierSnapshot
 	FAttributeSnapshot AttributeSnapshot;
 
 	UPROPERTY()
-	double SnapshotTimestamp;
+	double SnapshotTimestamp{};
 
 	bool operator==(const FPredictedModifierSnapshot& Other) const
 	{

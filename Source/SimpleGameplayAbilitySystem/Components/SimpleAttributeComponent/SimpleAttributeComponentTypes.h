@@ -34,28 +34,28 @@ struct FValueLimits
 	GENERATED_BODY()
 
 	UPROPERTY(EditAnywhere, meta=(InlineEditConditionToggle))
-	bool UseMinBaseValue;
+	bool UseMinBaseValue{};
 	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (EditCondition = "UseMinBaseValue"))
-	float MinBaseValue;
+	float MinBaseValue{};
 
 	UPROPERTY(EditAnywhere, meta=(InlineEditConditionToggle))
-	bool UseMaxBaseValue;
+	bool UseMaxBaseValue{};
 	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (EditCondition = "UseMaxBaseValue"))
-	float MaxBaseValue;
+	float MaxBaseValue{};
 
 	UPROPERTY(EditAnywhere, meta=(InlineEditConditionToggle))
-	bool UseMinCurrentValue;
+	bool UseMinCurrentValue{};
 	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (EditCondition = "UseMinCurrentValue"))
-	float MinCurrentValue;
+	float MinCurrentValue{};
 
 	UPROPERTY(EditAnywhere, meta=(InlineEditConditionToggle))
-	bool UseMaxCurrentValue;
+	bool UseMaxCurrentValue{};
 	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (EditCondition = "UseMaxCurrentValue"))
-	float MaxCurrentValue;
+	float MaxCurrentValue{};
 };
 
 /**
@@ -136,10 +136,10 @@ struct FFloatAttribute : public FFastArraySerializerItem
 	FGameplayTag AttributeTag;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	float BaseValue;
+	float BaseValue{};
 	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	float CurrentValue;
+	float CurrentValue{};
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	FValueLimits ValueLimits;
@@ -207,7 +207,7 @@ struct FStructAttribute : public FFastArraySerializerItem
 	FGameplayTag AttributeTag;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	UScriptStruct* StructType;
+	UScriptStruct* StructType = nullptr;
 
 	UPROPERTY(BlueprintReadWrite)
 	FInstancedStruct AttributeValue;
@@ -294,7 +294,7 @@ struct FGameplayTagCounter : public FFastArraySerializerItem
 	FGameplayTag GameplayTag;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadWrite)
-	int32 ReferenceCounter;
+	int32 ReferenceCounter{};
 
 	bool operator==(const FGameplayTagCounter& Other) const
 	{

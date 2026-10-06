@@ -199,7 +199,7 @@ struct FAbilityEventActivationConfig
 	bool RequireContext = false;
 	
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, meta = (EditCondition = "RequireContext"))
-	UScriptStruct* RequiredContextType;
+	UScriptStruct* RequiredContextType = nullptr;
 };
 
 /* Delegates */
@@ -238,13 +238,13 @@ struct FAbilityState : public FFastArraySerializerItem
 
 	// Keep track of who activated the ability (server/listen server/client)
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)
-	EAbilityNetworkRole ActivatedOn;
+	EAbilityNetworkRole ActivatedOn{};
 	
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
 	EAbilityStatus AbilityStatus = EAbilityStatus::PreActivation;
 	
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
-	double ActivationTimeStamp;
+	double ActivationTimeStamp{};
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
 	FInstancedStruct ActivationContext;
@@ -253,7 +253,7 @@ struct FAbilityState : public FFastArraySerializerItem
 	FInstancedStruct EndingContext;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
-	double EndingTimeStamp;
+	double EndingTimeStamp{};
 
 	bool operator==(const FAbilityState& Other) const
 	{
@@ -337,7 +337,7 @@ struct FAbilitySnapshot : public FFastArraySerializerItem
 	TSubclassOf<USimpleAbilityBase> AbilityClass;
 	
 	UPROPERTY(BlueprintReadWrite)
-	double TimeStamp;
+	double TimeStamp{};
 
 	UPROPERTY(BlueprintReadWrite)
 	FInstancedStruct SnapshotData;

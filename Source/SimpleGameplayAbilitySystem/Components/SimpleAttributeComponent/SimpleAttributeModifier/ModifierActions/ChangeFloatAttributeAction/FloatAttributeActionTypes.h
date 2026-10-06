@@ -83,16 +83,16 @@ struct FFloatAttributeModification
 	GENERATED_BODY()
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	USimpleGameplayAbilityComponent* AttributeOwner;
+	USimpleGameplayAbilityComponent* AttributeOwner = nullptr;
 	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	FGameplayTag AttributeTag;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	EFloatAttributeValueType ValueType;
+	EFloatAttributeValueType ValueType{};
 	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	float NewValue;
+	float NewValue{};
 };
 
 USTRUCT(BlueprintType)
@@ -101,7 +101,7 @@ struct FStructAttributeModification
 	GENERATED_BODY()
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	USimpleAttributeComponent* AttributeOwner;
+	USimpleAttributeComponent* AttributeOwner = nullptr;
 	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	FGameplayTag AttributeTag;
