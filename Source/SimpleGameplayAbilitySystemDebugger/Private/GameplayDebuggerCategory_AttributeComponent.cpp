@@ -261,7 +261,9 @@ void FGameplayDebuggerCategory_AttributeComponent::DrawData(APlayerController* O
 	bool bShowLocalPrediction = false;
 
 	UWorld* World = DebugActor->GetWorld();
-	ENetMode NetMode = World ? World->GetNetMode() : NM_Standalone;
+	const ENetMode NetMode = World ? World->GetNetMode() : NM_Standalone;
+	const bool bWorldIsAuthoritative = NetMode == NM_Standalone || NetMode == NM_ListenServer
+		|| NetMode == NM_DedicatedServer;
 
 	if (OwnerPC && OwnerPC->IsLocalController())
 	{
@@ -271,15 +273,19 @@ void FGameplayDebuggerCategory_AttributeComponent::DrawData(APlayerController* O
 	}
 
 	// On server, always show local data (which is the authoritative data)
-	if (NetMode == NM_ListenServer || NetMode == NM_DedicatedServer || NetMode == NM_Standalone)
+	if (bWorldIsAuthoritative)
 	{
 		bShowLocalPrediction = true;
 	}
 
 	CanvasContext.Printf(TEXT("{yellow}=== ATTRIBUTE COMPONENT ==="));
-	if (bShowLocalPrediction)
+	if (bWorldIsAuthoritative)
 	{
-		CanvasContext.Printf(TEXT("{green}[LOCAL PREDICTED VALUES]"));
+		CanvasContext.Printf(TEXT("{green}[AUTHORITATIVE VALUES]"));
+	}
+	else if (bShowLocalPrediction)
+	{
+		CanvasContext.Printf(TEXT("{yellow}[LOCAL PREDICTED VALUES]"));
 	}
 	else
 	{
@@ -318,7 +324,7 @@ void FGameplayDebuggerCategory_AttributeComponent::DrawData(APlayerController* O
 		if (AttributeComp)
 		{
 			// On server, read from Authority arrays; on client, read from Local predicted arrays
-			bool bIsServer = (NetMode == NM_ListenServer || NetMode == NM_DedicatedServer);
+			const bool bIsServer = bWorldIsAuthoritative;
 
 			// Collect float attributes
 			const TArray<FFloatAttribute>& FloatAttrsSource = bIsServer

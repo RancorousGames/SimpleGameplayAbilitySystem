@@ -5,6 +5,7 @@
 #include "Engine/GameInstance.h"
 #include "GameFramework/WorldSettings.h"
 #include "GameFramework/GameStateBase.h"
+#include "UObject/StrongObjectPtr.h"
 #include "SimpleGameplayAbilitySystem/SimpleEventSubsystem/SimpleEventSubsystem.h"
 
 // Test fixture that sets up the persistent test world and subsystem
@@ -13,19 +14,28 @@ class FTestFixture
 public:
 	FTestFixture(FName TestName)
 	{
-		World = CreateTestWorld(TestName);
-		Subsystem = EnsureSubsystem(World);
+		World.Reset(CreateTestWorld(TestName));
+		Subsystem = EnsureSubsystem(World.Get());
+		OwnedGameInstance = World.IsValid() ? World->GetGameInstance() : nullptr;
 	}
 
 	~FTestFixture()
 	{
+		if (!World.IsValid()) return;
+		if (World->HasBegunPlay()) World->EndPlay(EEndPlayReason::Quit);
+		if (OwnedGameInstance) OwnedGameInstance->Shutdown();
+		World->DestroyWorld(true);
+		if (GEngine) GEngine->DestroyWorldContext(World.Get());
+		Subsystem = nullptr;
+		OwnedGameInstance = nullptr;
 	}
 
-	UWorld* GetWorld() const { return World; }
+	UWorld* GetWorld() const { return World.Get(); }
 	USimpleEventSubsystem* GetSubsystem() const { return Subsystem; }
 
 private:
-	UWorld* World = nullptr;
+	TStrongObjectPtr<UWorld> World;
+	UGameInstance* OwnedGameInstance = nullptr;
 	USimpleEventSubsystem* Subsystem = nullptr;
 	
 	static UWorld* CreateTestWorld(const FName& WorldName)

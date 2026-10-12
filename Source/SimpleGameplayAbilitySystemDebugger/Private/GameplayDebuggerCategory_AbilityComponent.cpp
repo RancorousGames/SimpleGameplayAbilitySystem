@@ -134,7 +134,9 @@ void FGameplayDebuggerCategory_AbilityComponent::DrawData(APlayerController* Own
 	bool bShowLocalPrediction = false;
 
 	UWorld* World = DebugActor->GetWorld();
-	ENetMode NetMode = World ? World->GetNetMode() : NM_Standalone;
+	const ENetMode NetMode = World ? World->GetNetMode() : NM_Standalone;
+	const bool bWorldIsAuthoritative = NetMode == NM_Standalone || NetMode == NM_ListenServer
+		|| NetMode == NM_DedicatedServer;
 
 	if (OwnerPC && OwnerPC->IsLocalController())
 	{
@@ -143,15 +145,19 @@ void FGameplayDebuggerCategory_AbilityComponent::DrawData(APlayerController* Own
 	}
 
 	// On server, always show local data (which is the authoritative data)
-	if (NetMode == NM_ListenServer || NetMode == NM_DedicatedServer || NetMode == NM_Standalone)
+	if (bWorldIsAuthoritative)
 	{
 		bShowLocalPrediction = true;
 	}
 
 	CanvasContext.Printf(TEXT("{yellow}=== ABILITY COMPONENT ==="));
-	if (bShowLocalPrediction)
+	if (bWorldIsAuthoritative)
 	{
-		CanvasContext.Printf(TEXT("{green}[LOCAL PREDICTED VALUES]"));
+		CanvasContext.Printf(TEXT("{green}[AUTHORITATIVE VALUES]"));
+	}
+	else if (bShowLocalPrediction)
+	{
+		CanvasContext.Printf(TEXT("{yellow}[LOCAL PREDICTED VALUES]"));
 	}
 	else
 	{
@@ -176,7 +182,7 @@ void FGameplayDebuggerCategory_AbilityComponent::DrawData(APlayerController* Own
 		}
 		if (AbilityComp && IsValid(AbilityComp))
 		{
-			bool bIsServer = (NetMode == NM_ListenServer || NetMode == NM_DedicatedServer);
+			const bool bIsServer = bWorldIsAuthoritative;
 
 			// Make a copy to avoid crashes if the array is modified during iteration
 			TArray<FAbilityState> AbilityStatesCopy = bIsServer
@@ -240,7 +246,7 @@ void FGameplayDebuggerCategory_AbilityComponent::DrawData(APlayerController* Own
 	int32 PendingCount = bShowLocalPrediction ? LocalPendingCount : DataPack.PendingSnapshotCount;
 
 	// On server, all states are confirmed
-	bool bIsServer = (NetMode == NM_ListenServer || NetMode == NM_DedicatedServer || NetMode == NM_Standalone);
+	const bool bIsServer = bWorldIsAuthoritative;
 
 	if (SortedStates.Num() == 0)
 	{
