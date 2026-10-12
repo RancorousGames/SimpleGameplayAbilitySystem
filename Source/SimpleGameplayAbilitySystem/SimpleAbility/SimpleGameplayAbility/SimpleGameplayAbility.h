@@ -124,6 +124,15 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Ability|Cooldown")
 	bool HasCooldown() const { return CooldownType != ECooldownType::NoCooldown; }
 
+	/**
+	 * Called on an active SingleInstance ability when its class is activated again, before the instance is re-initialized
+	 * for the new activation. Return false to reject the new activation and keep this one running; this is ignored when
+	 * bMustReplace is true (the server already accepted the new activation). Overrides may end this instance themselves
+	 * with a more specific status; if it is still active afterwards the component cancels it.
+	 * The default cancels this instance (the previous behaviour).
+	 */
+	virtual bool HandleReactivationWhileActive(const FInstancedStruct& NewActivationContext, bool bMustReplace);
+
 	virtual bool CanActivateInternal() override;
 	virtual void PreActivateInternal() override;
 	virtual void AbilityEndedInternal(FInstancedStruct EndingContext, bool WasCancelled) override;

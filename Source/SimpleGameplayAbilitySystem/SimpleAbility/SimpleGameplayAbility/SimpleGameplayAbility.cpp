@@ -143,6 +143,12 @@ USimpleSubAbility* USimpleGameplayAbility::GetSubAbilityInstance(const TSubclass
 	return SubAbilityInstance;
 }
 
+bool USimpleGameplayAbility::HandleReactivationWhileActive(const FInstancedStruct& NewActivationContext, bool bMustReplace)
+{
+	CancelAbility(FGameplayTag::EmptyTag, FInstancedStruct());
+	return true;
+}
+
 void USimpleGameplayAbility::PreActivateInternal()
 {
 	if (!IsValid(AttributeComponent))

@@ -117,7 +117,7 @@ void USimpleGameplayAbilityComponent::SendEventToServer(
 	}
 
 	const FGuid EventID = FGuid::NewGuid();
-	ServerSendEvent(EventID, EventTag, DomainTag, Payload, Sender, ListenerFilter);
+	ServerOnlySendEvent(EventID, EventTag, DomainTag, Payload, Sender, ListenerFilter);
 }
 
 void USimpleGameplayAbilityComponent::SendEventToClient(
@@ -176,6 +176,17 @@ void USimpleGameplayAbilityComponent::ServerSendEvent_Implementation(
 	MulticastSendEvent(EventID, EventTag, DomainTag, Payload, Sender, ListenerFilter);
 }
 
+void USimpleGameplayAbilityComponent::ServerOnlySendEvent_Implementation(
+	const FGuid& EventID,
+	FGameplayTag EventTag,
+	FGameplayTag DomainTag,
+	const FInstancedStruct& Payload,
+	UObject* Sender,
+	const TArray<UObject*>& ListenerFilter)
+{
+	ProcessIncomingEvent(EventID, EventTag, DomainTag, Payload, Sender, ListenerFilter);
+}
+
 void USimpleGameplayAbilityComponent::ClientSendEvent_Implementation(
 	const FGuid& EventID,
 	FGameplayTag EventTag,
@@ -206,18 +217,23 @@ void USimpleGameplayAbilityComponent::ProcessIncomingEvent(
 	UObject* Sender,
 	const TArray<UObject*>& ListenerFilter)
 {
-	// Check if we've already processed this event
-	if (LocallySentEventIDs.Contains(EventID))
+	// Purely local events carry no EventID and are never duplicates; deduplicating the empty ID would drop every
+	// later local event until the next cleanup.
+	if (EventID.IsValid())
 	{
-		// Skip duplicate event (we already sent it locally)
-		return;
-	}
+		// Check if we've already processed this event
+		if (LocallySentEventIDs.Contains(EventID))
+		{
+			// Skip duplicate event (we already sent it locally)
+			return;
+		}
 
-	// Add EventID to our set and track timestamp
-	LocallySentEventIDs.Add(EventID);
-	if (UWorld* World = GetWorld())
-	{
-		EventIDTimestamps.Add(EventID, World->GetTimeSeconds());
+		// Add EventID to our set and track timestamp
+		LocallySentEventIDs.Add(EventID);
+		if (UWorld* World = GetWorld())
+		{
+			EventIDTimestamps.Add(EventID, World->GetTimeSeconds());
+		}
 	}
 
 	// Get the SimpleEventSubsystem and dispatch the event
@@ -479,14 +495,35 @@ bool USimpleGameplayAbilityComponent::ActivateAbilityInternal(
 
 	USimpleGameplayAbility* AbilityInstance = GetAbilityInstanceByClass(AbilityClass);
 	
-	if (AbilityInstance->InstancingPolicy == EAbilityInstancingPolicy::SingleInstance)
+	if (AbilityInstance->InstancingPolicy == EAbilityInstancingPolicy::SingleInstance && AbilityInstance->IsActive)
 	{
+		if (!AbilityInstance->HandleReactivationWhileActive(AbilityContext, false))
+		{
+			SIMPLE_LOG(this, FString::Printf(TEXT("[USimpleGameplayAbilityComponent::ActivateAbility]: Active instance of %s rejected reactivation."), *AbilityClass->GetName()));
+
+			// Record the rejection so a predicting client hears back about this AbilityID.
+			if (ShouldTrackState && HasAuthority())
+			{
+				FAbilityState RejectedState;
+				RejectedState.AbilityID = AbilityID;
+				RejectedState.AbilityClass = AbilityClass;
+				RejectedState.AbilityStatus = ActivationFailed;
+				RejectedState.ActivatedOn = ActivatedOn;
+				RejectedState.ActivationTimeStamp = ActivationTime;
+				RejectedState.ActivationContext = AbilityContext;
+				RejectedState.EndingTimeStamp = GetServerTime();
+				AuthorityAbilityStates.AbilityStates.Add(RejectedState);
+				AuthorityAbilityStates.MarkItemDirty(AuthorityAbilityStates.AbilityStates.Last());
+			}
+			return false;
+		}
+
 		if (AbilityInstance->IsActive)
 		{
 			AbilityInstance->CancelAbility(FGameplayTag::EmptyTag, FInstancedStruct());
 		}
 	}
-	
+
 	if (ShouldTrackState)
 	{
 		FAbilityState NewState;
@@ -1063,11 +1100,28 @@ void USimpleGameplayAbilityComponent::ResolveLocalAbilityState(const FAbilitySta
 			else
 			{
 				ProcessDeferredSnapshots(UpdatedAbilityState.AbilityID);
+
+				// The server ended this activation: end the local instance too, but only if it still runs this AbilityID.
+				if (IsInstancedAbilityActive && AbilityInstance->AbilityID == UpdatedAbilityState.AbilityID)
+				{
+					AbilityInstance->EndAbility(FGameplayTag::EmptyTag, UpdatedAbilityState.EndingContext);
+				}
+
+				// EndAbility only updates existing entries, so the pointer is still valid
 				*LocalAbilityState = UpdatedAbilityState;
 			}
 			return;
 
 		case ActivationSuccess:
+			// Confirmation of an activation this client predicted. It is either still running or already ended/replaced
+			// locally; never cancel a newer local activation or restart this one because of it.
+			if (UpdatedAbilityState.ActivatedOn == EAbilityNetworkRole::Client && !HasAuthority() && LocalAbilityState
+				&& !(IsInstancedAbilityActive && AbilityInstance->AbilityID == UpdatedAbilityState.AbilityID))
+			{
+				*LocalAbilityState = UpdatedAbilityState;
+				return;
+			}
+
 			if (IsInstancedAbilityActive)
 			{
 				// If the ability is already running on the client using the UpdatedAbility state ID we don't need to do anything
@@ -1085,8 +1139,13 @@ void USimpleGameplayAbilityComponent::ResolveLocalAbilityState(const FAbilitySta
 					return;
 				}
 
-				// Otherwise an ability with a different ID is already running and needs to be cancelled first
-				AbilityInstance->CancelAbility(FGameplayTag::EmptyTag, FInstancedStruct());
+				// Otherwise an ability with a different ID is already running. The server already accepted the new
+				// activation, so the running instance must make way for it.
+				AbilityInstance->HandleReactivationWhileActive(UpdatedAbilityState.ActivationContext, true);
+				if (AbilityInstance->IsActive)
+				{
+					AbilityInstance->CancelAbility(FGameplayTag::EmptyTag, FInstancedStruct());
+				}
 			}
 
 			// Don't re-activate if this was a client-predicted ability that was originally activated on this client
@@ -1109,10 +1168,11 @@ void USimpleGameplayAbilityComponent::ResolveLocalAbilityState(const FAbilitySta
 		case PreActivation:
 		case ActivationFailed:
 		case Cancelled:
-			// The server rejected this ability, so cancel whatever is running
-			if (IsSingleInstanceAbility && IsInstancedAbilityActive)
+			// The server rejected or cancelled this activation. Cancel the local instance only if it is still running
+			// this AbilityID; a newer local activation of the same class must survive a stale rejection.
+			if (IsSingleInstanceAbility && IsInstancedAbilityActive && AbilityInstance->AbilityID == UpdatedAbilityState.AbilityID)
 			{
-				AbilityInstance->CancelAbility(FGameplayTag::EmptyTag, FInstancedStruct());
+				AbilityInstance->CancelAbility(FGameplayTag::EmptyTag, UpdatedAbilityState.EndingContext);
 			}
 			break;
 	}

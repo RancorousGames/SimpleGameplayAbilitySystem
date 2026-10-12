@@ -90,8 +90,8 @@ enum class EAbilityInstancingPolicy : uint8
 	/**
 	 * Only one instance of this ability is created.
 	 * If we try to activate it again, and the ability is already active, the previous instance will call
-	 * USimpleGameplayAbility::CanCancel() and if it returns true it will be cancelled.
-	 * If CanCancel() returns false, the new instance will fail to activate to the ability.
+	 * USimpleGameplayAbility::HandleReactivationWhileActive() and if it returns true it will be ended or cancelled.
+	 * If it returns false, the new activation fails (a tracked activation records an ActivationFailed state).
 	 */
 	SingleInstance,
 	/**

@@ -98,6 +98,16 @@ public:
 		UObject* Sender,
 		const TArray<UObject*>& ListenerFilter);
 
+	/** SendEventToServer from a client: delivered on the server only (ServerSendEvent also multicasts). */
+	UFUNCTION(Server, Reliable)
+	void ServerOnlySendEvent(
+		const FGuid& EventID,
+		FGameplayTag EventTag,
+		FGameplayTag DomainTag,
+		const FInstancedStruct& Payload,
+		UObject* Sender,
+		const TArray<UObject*>& ListenerFilter);
+
 	UFUNCTION(Client, Reliable)
 	void ClientSendEvent(
 		const FGuid& EventID,
@@ -350,6 +360,8 @@ public:
 	
 	USimpleGameplayAbility* GetAbilityInstanceByID(FGuid AbilityInstanceID);
 	USimpleGameplayAbility* GetAbilityInstanceByClass(TSubclassOf<USimpleGameplayAbility> AbilityClass);
+	/** Every ability instance this component has created (active or not). Read-only. */
+	const TArray<USimpleGameplayAbility*>& GetInstancedAbilities() const { return InstancedAbilities; }
 	FAbilityState* GetAbilityStateByID(FGuid AbilityInstanceID);
 
 protected:
