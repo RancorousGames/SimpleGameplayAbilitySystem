@@ -49,7 +49,7 @@ void USimpleGameplayAbilityComponent::BeginPlay()
 			}
 		}
 
-		// Start periodic cooldown cleanup timer (every 1 second on server)
+		// Periodically prune cooldowns and terminal ability states, even without further activations.
 		if (UWorld* World = GetWorld())
 		{
 			World->GetTimerManager().SetTimer(
@@ -937,6 +937,7 @@ void USimpleGameplayAbilityComponent::OnAbilityActivationFailed(USimpleAbilityBa
 		if (AbilityState.AbilityID == AbilityID)
 		{
 			AbilityState.AbilityStatus = ActivationFailed;
+			AbilityState.EndingTimeStamp = GetServerTime();
 
 			if (HasAuthority())
 			{
@@ -1036,14 +1037,18 @@ void USimpleGameplayAbilityComponent::CleanupOldAbilityStates()
 	const double CurrentTime = GetServerTime();
 	const double CleanupThreshold = 5.0; // Remove states older than 5 seconds
 
-	// Remove ended/cancelled states that are old enough
-	AuthorityAbilityStates.AbilityStates.RemoveAll([CurrentTime, CleanupThreshold](const FAbilityState& State)
+	// Retain terminal states for replication/prediction reconciliation, then release them.
+	// Rejected SingleInstance reactivations never receive an OnEnd callback.
+	const int32 RemovedCount = AuthorityAbilityStates.AbilityStates.RemoveAll([CurrentTime, CleanupThreshold](const FAbilityState& State)
 	{
-		const bool bIsFinished = (State.AbilityStatus == Ended || State.AbilityStatus == Cancelled);
+		const bool bIsFinished = (State.AbilityStatus == Ended || State.AbilityStatus == Cancelled || State.AbilityStatus == ActivationFailed);
 		const bool bIsOldEnough = (CurrentTime - State.EndingTimeStamp) > CleanupThreshold;
 		return bIsFinished && bIsOldEnough;
 	});
-	AuthorityAbilityStates.MarkArrayDirty();
+	if (RemovedCount > 0)
+	{
+		AuthorityAbilityStates.MarkArrayDirty();
+	}
 
 	// Also cleanup old snapshots
 	const double SnapshotCleanupThreshold = 10.0; // Keep snapshots a bit longer for late clients
@@ -1458,6 +1463,9 @@ void USimpleGameplayAbilityComponent::CleanupExpiredCooldowns()
 	{
 		return;
 	}
+
+	// Periodic cleanup is essential when no subsequent ability ends after rejected reactivations.
+	CleanupOldAbilityStates();
 
 	const double CurrentServerTime = GetServerTime();
 
