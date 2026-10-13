@@ -8,6 +8,7 @@
 class USimpleSubAbility;
 class USimpleAttributeComponent;
 class USimpleGameplayAbilityComponent;
+struct FAbilityState;
 
 UCLASS(Blueprintable, Abstract, BlueprintType)
 class SIMPLEGAMEPLAYABILITYSYSTEM_API USimpleGameplayAbility : public USimpleAbilityBase
@@ -132,6 +133,27 @@ public:
 	 * The default cancels this instance (the previous behaviour).
 	 */
 	virtual bool HandleReactivationWhileActive(const FInstancedStruct& NewActivationContext, bool bMustReplace);
+
+	/**
+	 * Client only: the server confirmed or revised the activation this instance is running (an ActivationSuccess state
+	 * with this AbilityID and a newer revision). Authoritative may carry a validated timestamp or a corrected activation
+	 * context that differs from the prediction; override to reconcile. The default does nothing.
+	 */
+	virtual void OnServerConfirmed(const FAbilityState& Authoritative) {}
+
+	/**
+	 * Client only: this activation was first observed already Ended (it activated and ended on the server between two
+	 * updates) and has just been replayed locally. Return true to end the replay at once with the server's ending
+	 * context. The default lets the replay run its own course (instant abilities end by themselves).
+	 */
+	virtual bool EndsReplayObservedAsEnded() const { return false; }
+
+	/**
+	 * Server, called on the class default object: the activation time to use for a client's request stamped ClientTime.
+	 * OwnerRTT is the requesting connection's round-trip time in seconds (0 if unknown). The default accepts the stamp,
+	 * past or future, unless it is more than 2 s away from ServerNow (then ServerNow is used).
+	 */
+	virtual double ValidateClientActivationTime(double ClientTime, double ServerNow, float OwnerRTT) const;
 
 	virtual bool CanActivateInternal() override;
 	virtual void PreActivateInternal() override;

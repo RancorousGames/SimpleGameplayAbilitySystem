@@ -115,6 +115,21 @@ enum class EAbilityStatus :uint8
 	Cancelled,
 };
 
+/* Why the server refused a tracked activation. Recorded on its ActivationFailed state. */
+UENUM(BlueprintType)
+enum class EAbilityActivationFailureReason :uint8
+{
+	None,
+	/* The ability requires a grant the component doesn't have */
+	NotGranted,
+	/* The ability class is on cooldown */
+	OnCooldown,
+	/* The running SingleInstance refused the reactivation (USimpleGameplayAbility::HandleReactivationWhileActive) */
+	ReactivationRefused,
+	/* Activation requirements failed (tags, USimpleGameplayAbility::CanActivate etc.) */
+	RequirementsFailed,
+};
+
 UENUM(BlueprintType)
 enum class EAbilityNetworkRole :uint8
 {
@@ -254,6 +269,22 @@ struct FAbilityState : public FFastArraySerializerItem
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
 	double EndingTimeStamp{};
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
+	EAbilityActivationFailureReason FailureReason = EAbilityActivationFailureReason::None;
+
+	/**
+	 * Bumped by every authoritative modification of this activation (tracking, confirmation, corrected context, end).
+	 * Clients discard updates that are not newer than the state they already applied. Locally predicted states are 0.
+	 */
+	UPROPERTY(VisibleAnywhere)
+	uint16 Revision = 0;
+
+	/** Wrap-safe revision order. */
+	static bool IsRevisionNewer(const uint16 Candidate, const uint16 Current)
+	{
+		return static_cast<int16>(static_cast<uint16>(Candidate - Current)) > 0;
+	}
 
 	bool operator==(const FAbilityState& Other) const
 	{

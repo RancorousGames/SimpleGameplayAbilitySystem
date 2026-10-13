@@ -1,7 +1,9 @@
 ﻿#include "SimpleGameplayAbilityComponent.h"
 
 #include "GameFramework/GameStateBase.h"
+#include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerState.h"
+#include "Engine/NetConnection.h"
 #include "Net/UnrealNetwork.h"
 #include "SimpleGameplayAbilitySystem/Components/SimpleAttributeComponent/SimpleAttributeComponent.h"
 #include "SimpleGameplayAbilitySystem/Components/SimpleTimeSynchronizerComponent/ExtendedTimeSynchronizer/SimpleTimeSynchronizerExtended.h"
@@ -483,6 +485,10 @@ bool USimpleGameplayAbilityComponent::ActivateAbilityInternal(
 	if (!GrantedAbilities.Contains(AbilityClass) && AbilityClass->GetDefaultObject<USimpleGameplayAbility>()->RequireGrantToActivate)
 	{
 		SIMPLE_LOG(this, FString::Printf(TEXT("[USimpleGameplayAbilityComponent::ActivateAbility]: Ability %s is not granted!"), *AbilityClass->GetName()));
+		if (ShouldTrackState)
+		{
+			RecordRejectedActivation(AbilityID, AbilityClass, AbilityContext, ActivationTime, ActivatedOn, EAbilityActivationFailureReason::NotGranted);
+		}
 		return false;
 	}
 
@@ -490,6 +496,10 @@ bool USimpleGameplayAbilityComponent::ActivateAbilityInternal(
 	if (IsAbilityOnCooldown(AbilityClass))
 	{
 		SIMPLE_LOG(this, FString::Printf(TEXT("[USimpleGameplayAbilityComponent::ActivateAbility]: Ability %s is on cooldown!"), *AbilityClass->GetName()));
+		if (ShouldTrackState)
+		{
+			RecordRejectedActivation(AbilityID, AbilityClass, AbilityContext, ActivationTime, ActivatedOn, EAbilityActivationFailureReason::OnCooldown);
+		}
 		return false;
 	}
 
@@ -501,19 +511,9 @@ bool USimpleGameplayAbilityComponent::ActivateAbilityInternal(
 		{
 			SIMPLE_LOG(this, FString::Printf(TEXT("[USimpleGameplayAbilityComponent::ActivateAbility]: Active instance of %s rejected reactivation."), *AbilityClass->GetName()));
 
-			// Record the rejection so a predicting client hears back about this AbilityID.
-			if (ShouldTrackState && HasAuthority())
+			if (ShouldTrackState)
 			{
-				FAbilityState RejectedState;
-				RejectedState.AbilityID = AbilityID;
-				RejectedState.AbilityClass = AbilityClass;
-				RejectedState.AbilityStatus = ActivationFailed;
-				RejectedState.ActivatedOn = ActivatedOn;
-				RejectedState.ActivationTimeStamp = ActivationTime;
-				RejectedState.ActivationContext = AbilityContext;
-				RejectedState.EndingTimeStamp = GetServerTime();
-				AuthorityAbilityStates.AbilityStates.Add(RejectedState);
-				AuthorityAbilityStates.MarkItemDirty(AuthorityAbilityStates.AbilityStates.Last());
+				RecordRejectedActivation(AbilityID, AbilityClass, AbilityContext, ActivationTime, ActivatedOn, EAbilityActivationFailureReason::ReactivationRefused);
 			}
 			return false;
 		}
@@ -533,15 +533,16 @@ bool USimpleGameplayAbilityComponent::ActivateAbilityInternal(
 		NewState.ActivatedOn = ActivatedOn;
 		NewState.ActivationTimeStamp = ActivationTime;
 		NewState.ActivationContext = AbilityContext;
-		
-		if (GetNetMode() == NM_Client && !HasAuthority())
+
+		// Only clients have non-authority actors: a prediction is local until the server's state arrives.
+		if (!HasAuthority())
 		{
 			LocalAbilityStates.Add(NewState);
 		}
 		else
 		{
 			AuthorityAbilityStates.AbilityStates.Add(NewState);
-			AuthorityAbilityStates.MarkItemDirty(NewState);
+			MarkAbilityStateDirty(AuthorityAbilityStates.AbilityStates.Last());
 		}
 	}
 
@@ -553,7 +554,7 @@ void USimpleGameplayAbilityComponent::ServerActivateAbility_Implementation(
 	const FGuid AbilityID,
 	TSubclassOf<USimpleGameplayAbility> AbilityClass,
 	const FInstancedStruct& AbilityContexts,
-	const float ActivationTime)
+	const double ActivationTime)
 {
 	if (!AbilityClass)
 	{
@@ -561,21 +562,86 @@ void USimpleGameplayAbilityComponent::ServerActivateAbility_Implementation(
 		return;
 	}
 
+	// Each ability class decides how far a client's stamp may reach back (or forward) from the server's clock.
 	const double ServerTime = GetServerTime();
 	const double ClientTime = ActivationTime;
-	const double TimeDifference = FMath::Abs(ServerTime - ClientTime);
-	const double MaxAllowedTimeDrift = 2.0; // Allow up to 2 seconds of drift for high latency
-
-	double ValidatedTime = ActivationTime;
-	if (TimeDifference > MaxAllowedTimeDrift)
+	const double ValidatedTime = AbilityClass.GetDefaultObject()->ValidateClientActivationTime(ClientTime, ServerTime, GetOwnerRoundTripTime());
+	if (FMath::Abs(ValidatedTime - ClientTime) > 2.0)
 	{
-		// Client time is too far off, use server time instead
-		SIMPLE_LOG(this, FString::Printf(TEXT("[USimpleGameplayAbilityComponent::ServerActivateAbility]: Client timestamp %.2f differs from server %.2f by %.2f seconds (max allowed: %.2f). Using server time."),
-			ClientTime, ServerTime, TimeDifference, MaxAllowedTimeDrift));
-		ValidatedTime = ServerTime;
+		SIMPLE_LOG(this, FString::Printf(TEXT("[USimpleGameplayAbilityComponent::ServerActivateAbility]: Client timestamp %.2f differs from server %.2f by %.2f seconds. Using %.2f."),
+			ClientTime, ServerTime, ServerTime - ClientTime, ValidatedTime));
 	}
 
 	ActivateAbilityInternal(AbilityID, AbilityClass, AbilityContexts, true, ValidatedTime, EAbilityNetworkRole::Client);
+}
+
+float USimpleGameplayAbilityComponent::GetOwnerRoundTripTime() const
+{
+	if (const APawn* OwnerPawn = Cast<APawn>(GetOwner()))
+	{
+		if (const APlayerState* PS = OwnerPawn->GetPlayerState())
+		{
+			return PS->GetPingInMilliseconds() / 1000.f;
+		}
+	}
+	if (const APlayerState* OwnerPlayerState = Cast<APlayerState>(GetOwner()))
+	{
+		return OwnerPlayerState->GetPingInMilliseconds() / 1000.f;
+	}
+	const UNetConnection* Connection = GetOwner() ? GetOwner()->GetNetConnection() : nullptr;
+	return Connection ? Connection->AvgLag : 0.f;
+}
+
+bool USimpleGameplayAbilityComponent::ReviseActivationContext(const FGuid AbilityInstanceID, const FInstancedStruct& NewActivationContext)
+{
+	if (!HasAuthority())
+	{
+		return false;
+	}
+
+	for (FAbilityState& AbilityState : AuthorityAbilityStates.AbilityStates)
+	{
+		if (AbilityState.AbilityID == AbilityInstanceID)
+		{
+			AbilityState.ActivationContext = NewActivationContext;
+			MarkAbilityStateDirty(AbilityState);
+			return true;
+		}
+	}
+	return false;
+}
+
+void USimpleGameplayAbilityComponent::MarkAbilityStateDirty(FAbilityState& AbilityState)
+{
+	++AbilityState.Revision;
+	if (AbilityState.Revision == 0)
+	{
+		++AbilityState.Revision; // Zero is reserved for a local prediction, including after wraparound.
+	}
+	AuthorityAbilityStates.MarkItemDirty(AbilityState);
+}
+
+void USimpleGameplayAbilityComponent::RecordRejectedActivation(const FGuid& AbilityID, const TSubclassOf<USimpleGameplayAbility>& AbilityClass,
+	const FInstancedStruct& AbilityContext, const double ActivationTime, const EAbilityNetworkRole ActivatedOn,
+	const EAbilityActivationFailureReason Reason)
+{
+	// A client's own refused prediction never reaches the server, so there is nothing to tell anyone.
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	FAbilityState RejectedState;
+	RejectedState.AbilityID = AbilityID;
+	RejectedState.AbilityClass = AbilityClass;
+	RejectedState.AbilityStatus = ActivationFailed;
+	RejectedState.FailureReason = Reason;
+	RejectedState.ActivatedOn = ActivatedOn;
+	RejectedState.ActivationTimeStamp = ActivationTime;
+	RejectedState.ActivationContext = AbilityContext;
+	RejectedState.EndingTimeStamp = GetServerTime();
+	AuthorityAbilityStates.AbilityStates.Add(RejectedState);
+	MarkAbilityStateDirty(AuthorityAbilityStates.AbilityStates.Last());
 }
 
 USimpleGameplayAbility* USimpleGameplayAbilityComponent::GetAbilityInstanceByClass(TSubclassOf<USimpleGameplayAbility> AbilityClass)
@@ -908,7 +974,7 @@ void USimpleGameplayAbilityComponent::OnAbilityActivationSuccess(USimpleAbilityB
 
 			if (HasAuthority())
 			{
-				AuthorityAbilityStates.MarkItemDirty(AbilityState);
+				MarkAbilityStateDirty(AbilityState);
 			}
 
 			break;
@@ -937,11 +1003,12 @@ void USimpleGameplayAbilityComponent::OnAbilityActivationFailed(USimpleAbilityBa
 		if (AbilityState.AbilityID == AbilityID)
 		{
 			AbilityState.AbilityStatus = ActivationFailed;
+			AbilityState.FailureReason = EAbilityActivationFailureReason::RequirementsFailed;
 			AbilityState.EndingTimeStamp = GetServerTime();
 
 			if (HasAuthority())
 			{
-				AuthorityAbilityStates.MarkItemDirty(AbilityState);
+				MarkAbilityStateDirty(AbilityState);
 			}
 
 			break;
@@ -970,7 +1037,7 @@ void USimpleGameplayAbilityComponent::OnAbilityEnded(USimpleAbilityBase* Ability
 
 			if (HasAuthority())
 			{
-				AuthorityAbilityStates.MarkItemDirty(AbilityState);
+				MarkAbilityStateDirty(AbilityState);
 				// Clean up old states periodically on server
 				CleanupOldAbilityStates();
 			}
@@ -1012,7 +1079,7 @@ void USimpleGameplayAbilityComponent::OnAbilityCancelled(USimpleAbilityBase* Abi
 
 			if (HasAuthority())
 			{
-				AuthorityAbilityStates.MarkItemDirty(AbilityStates[i]);
+				MarkAbilityStateDirty(AbilityStates[i]);
 				// Clean up old states periodically on server
 				CleanupOldAbilityStates();
 			}
@@ -1075,8 +1142,24 @@ void USimpleGameplayAbilityComponent::ResolveLocalAbilityState(const FAbilitySta
 {
 	FAbilityState* LocalAbilityState = LocalAbilityStates.FindByPredicate([UpdatedAbilityState](const FAbilityState& AbilityState) { return AbilityState.AbilityID == UpdatedAbilityState.AbilityID; });
 
+	// A duplicated or delayed update that isn't newer than the authoritative revision already applied is stale.
+	// Local predictions have revision 0 and always accept the server's state.
+	if (LocalAbilityState && LocalAbilityState->Revision != 0
+		&& !FAbilityState::IsRevisionNewer(UpdatedAbilityState.Revision, LocalAbilityState->Revision))
+	{
+		return;
+	}
+
 	const TSubclassOf<USimpleGameplayAbility> AbilityClass = static_cast<TSubclassOf<USimpleGameplayAbility>>(UpdatedAbilityState.AbilityClass);
-	USimpleGameplayAbility* AbilityInstance = GetAbilityInstanceByClass(AbilityClass);
+	if (!AbilityClass)
+	{
+		return;
+	}
+	USimpleGameplayAbility* AbilityInstance = GetAbilityInstanceByID(UpdatedAbilityState.AbilityID);
+	if (!AbilityInstance)
+	{
+		AbilityInstance = GetAbilityInstanceByClass(AbilityClass);
+	}
 	const bool IsSingleInstanceAbility = AbilityInstance->InstancingPolicy == EAbilityInstancingPolicy::SingleInstance;
 	const bool IsInstancedAbilityActive = AbilityInstance->IsActive;
 
@@ -1097,9 +1180,26 @@ void USimpleGameplayAbilityComponent::ResolveLocalAbilityState(const FAbilitySta
 					return;
 				}
 
-				AbilityInstance->Initialize(this, GetSimpleAttributeComponent(), UpdatedAbilityState.AbilityID);
-				AbilityInstance->ActivateAbility(UpdatedAbilityState.ActivationContext);
+				// An activation that is already over must not take over a running instance of a different activation.
+				if (IsSingleInstanceAbility && IsInstancedAbilityActive && AbilityInstance->AbilityID != UpdatedAbilityState.AbilityID)
+				{
+					LocalAbilityStates.Add(UpdatedAbilityState);
+					return;
+				}
+
 				LocalAbilityStates.Add(UpdatedAbilityState);
+				AbilityInstance->Initialize(this, IAttributeComponentInterface::Execute_GetSimpleAttributeComponent(this), UpdatedAbilityState.AbilityID);
+				AbilityInstance->ActivateAbility(UpdatedAbilityState.ActivationContext);
+				if (AbilityInstance->IsActive && AbilityInstance->AbilityID == UpdatedAbilityState.AbilityID
+					&& AbilityInstance->EndsReplayObservedAsEnded())
+				{
+					AbilityInstance->EndAbility(FGameplayTag::EmptyTag, UpdatedAbilityState.EndingContext);
+				}
+				// The replay's own lifecycle callbacks updated the local copy; the server's terminal state wins.
+				if (FAbilityState* ReplayedState = LocalAbilityStates.FindByPredicate([&UpdatedAbilityState](const FAbilityState& AbilityState) { return AbilityState.AbilityID == UpdatedAbilityState.AbilityID; }))
+				{
+					*ReplayedState = UpdatedAbilityState;
+				}
 			}
 			// Update existing state if it exists
 			else
@@ -1129,7 +1229,8 @@ void USimpleGameplayAbilityComponent::ResolveLocalAbilityState(const FAbilitySta
 
 			if (IsInstancedAbilityActive)
 			{
-				// If the ability is already running on the client using the UpdatedAbility state ID we don't need to do anything
+				// The ability is already running this activation (predicted here, or an earlier revision): record the
+				// server's state and let the instance reconcile with it (validated timestamp, corrected context).
 				if (AbilityInstance->AbilityID == UpdatedAbilityState.AbilityID)
 				{
 					// Check if there is a local ability state with the same ID and update it
@@ -1141,6 +1242,7 @@ void USimpleGameplayAbilityComponent::ResolveLocalAbilityState(const FAbilitySta
 					{
 						LocalAbilityStates.Add(UpdatedAbilityState);
 					}
+					AbilityInstance->OnServerConfirmed(UpdatedAbilityState);
 					return;
 				}
 
@@ -1163,7 +1265,7 @@ void USimpleGameplayAbilityComponent::ResolveLocalAbilityState(const FAbilitySta
 				break;
 			}
 
-			AbilityInstance->Initialize(this, GetSimpleAttributeComponent(), UpdatedAbilityState.AbilityID);
+			AbilityInstance->Initialize(this, IAttributeComponentInterface::Execute_GetSimpleAttributeComponent(this), UpdatedAbilityState.AbilityID);
 			AbilityInstance->ActivateAbility(UpdatedAbilityState.ActivationContext);
 			bAbilityJustActivated = true;
 
@@ -1175,7 +1277,7 @@ void USimpleGameplayAbilityComponent::ResolveLocalAbilityState(const FAbilitySta
 		case Cancelled:
 			// The server rejected or cancelled this activation. Cancel the local instance only if it is still running
 			// this AbilityID; a newer local activation of the same class must survive a stale rejection.
-			if (IsSingleInstanceAbility && IsInstancedAbilityActive && AbilityInstance->AbilityID == UpdatedAbilityState.AbilityID)
+			if (IsInstancedAbilityActive && AbilityInstance->AbilityID == UpdatedAbilityState.AbilityID)
 			{
 				AbilityInstance->CancelAbility(FGameplayTag::EmptyTag, UpdatedAbilityState.EndingContext);
 			}

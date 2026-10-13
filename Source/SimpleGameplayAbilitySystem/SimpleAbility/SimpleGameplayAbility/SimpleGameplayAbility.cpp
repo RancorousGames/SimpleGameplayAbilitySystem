@@ -149,6 +149,13 @@ bool USimpleGameplayAbility::HandleReactivationWhileActive(const FInstancedStruc
 	return true;
 }
 
+double USimpleGameplayAbility::ValidateClientActivationTime(const double ClientTime, const double ServerNow, const float OwnerRTT) const
+{
+	// Allow up to 2 seconds of drift for high latency; beyond that the client clock is too far off.
+	constexpr double MaxAllowedTimeDrift = 2.0;
+	return FMath::Abs(ServerNow - ClientTime) > MaxAllowedTimeDrift ? ServerNow : ClientTime;
+}
+
 void USimpleGameplayAbility::PreActivateInternal()
 {
 	if (!IsValid(AttributeComponent))
@@ -253,7 +260,7 @@ EAbilityNetworkRole USimpleGameplayAbility::GetNetworkRole() const
 
 bool USimpleGameplayAbility::HasAuthority() const
 {
-	return GetWorld()->GetNetMode() < NM_Client;
+	return AbilityComponent && AbilityComponent->HasAuthority();
 }
 
 AActor* USimpleGameplayAbility::GetAvatarActor() const

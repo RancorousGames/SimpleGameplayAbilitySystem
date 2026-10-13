@@ -248,7 +248,7 @@ public:
 		const FGuid AbilityID,
 		TSubclassOf<USimpleGameplayAbility> AbilityClass,
 		const FInstancedStruct& AbilityContexts,
-		float ActivationTime);
+		double ActivationTime);
 
 	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = "AbilityComponent|AbilityActivation")
 	void CancelAbility(FGuid AbilityInstanceID, FInstancedStruct CancellationContext);
@@ -364,13 +364,28 @@ public:
 	const TArray<USimpleGameplayAbility*>& GetInstancedAbilities() const { return InstancedAbilities; }
 	FAbilityState* GetAbilityStateByID(FGuid AbilityInstanceID);
 
+	/**
+	 * Authority only: replaces the activation context of a tracked activation (e.g. the server corrected the client's
+	 * selection) and publishes it as a new revision. Clients running that AbilityID receive OnServerConfirmed.
+	 * Returns false if the activation isn't tracked here.
+	 */
+	bool ReviseActivationContext(FGuid AbilityInstanceID, const FInstancedStruct& NewActivationContext);
+
+#if WITH_DEV_AUTOMATION_TESTS
+	/** Test seam: applies an authority state on a non-authority component as the replication callbacks would. */
+	void ReceiveAuthorityAbilityStateForTest(const FAbilityState& AuthorityState) { ResolveLocalAbilityState(AuthorityState); }
+#endif
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
-	
+
 	UFUNCTION(BlueprintNativeEvent, BlueprintPure, BlueprintCallable, Category = "AbilityComponent|Utility")
 	USimpleTimeSynchronizer* GetTimeSynchronizerComponent();
 	virtual USimpleTimeSynchronizer* GetTimeSynchronizerComponent_Implementation();
+
+	/** Server: round-trip time of the connection owning this component, in seconds (0 if unknown or local). */
+	virtual float GetOwnerRoundTripTime() const;
 	
 	bool ActivateAbilityInternal(
 		const FGuid AbilityID,
@@ -416,6 +431,12 @@ private:
 	void OnAbilityCancelled(USimpleAbilityBase* AbilityInstance, FGameplayTag CancelStatus, FInstancedStruct CancellationContext);
 
 	void ResolveLocalAbilityState(const FAbilityState& UpdatedAbilityState);
+	/** Authority: bump the revision of a tracked state and mark it for replication. */
+	void MarkAbilityStateDirty(FAbilityState& AbilityState);
+	/** Authority: track a refused activation so a predicting client always hears back about its AbilityID. */
+	void RecordRejectedActivation(const FGuid& AbilityID, const TSubclassOf<USimpleGameplayAbility>& AbilityClass,
+		const FInstancedStruct& AbilityContext, double ActivationTime, EAbilityNetworkRole ActivatedOn,
+		EAbilityActivationFailureReason Reason);
 	void ProcessDeferredSnapshots(FGuid AbilityID);
 	void TryResolveSnapshot(const FAbilitySnapshot& Snapshot);
 	void CleanupOldAbilityStates();
