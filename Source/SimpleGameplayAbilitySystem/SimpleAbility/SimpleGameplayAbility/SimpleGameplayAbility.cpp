@@ -143,6 +143,17 @@ USimpleSubAbility* USimpleGameplayAbility::GetSubAbilityInstance(const TSubclass
 	return SubAbilityInstance;
 }
 
+bool USimpleGameplayAbility::PreflightReactivation(const FInstancedStruct& NewActivationContext)
+{
+	// The old active instance has not been ended yet. Check tags, context, avatar,
+	// Blueprint CanActivate and subclass arbitration against the *incoming* payload.
+	const FInstancedStruct PreviousContext = AbilityContext;
+	AbilityContext = NewActivationContext;
+	const bool bAllowed = CanActivateInternal();
+	AbilityContext = PreviousContext;
+	return bAllowed;
+}
+
 bool USimpleGameplayAbility::HandleReactivationWhileActive(const FInstancedStruct& NewActivationContext, bool bMustReplace)
 {
 	CancelAbility(FGameplayTag::EmptyTag, FInstancedStruct());

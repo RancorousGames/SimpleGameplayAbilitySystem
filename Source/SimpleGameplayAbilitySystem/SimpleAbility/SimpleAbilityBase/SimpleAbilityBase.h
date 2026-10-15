@@ -48,6 +48,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Ability")
 	bool ActivateAbility(FInstancedStruct ActivationContext);
 
+		/** SGAS only: activate after all admission checks completed before replacing a SingleInstance predecessor. */
+		bool ActivateAbilityPrevalidated(FInstancedStruct ActivationContext);
+
 	UFUNCTION(BlueprintCallable, Category = "Ability", meta=(AdvancedDisplay = "EndStatus,EndContext"))
 	void EndAbility(FGameplayTag EndStatus, FInstancedStruct EndContext);
 

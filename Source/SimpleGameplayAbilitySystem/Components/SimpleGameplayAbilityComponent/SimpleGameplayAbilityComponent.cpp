@@ -504,10 +504,21 @@ bool USimpleGameplayAbilityComponent::ActivateAbilityInternal(
 	}
 
 	USimpleGameplayAbility* AbilityInstance = GetAbilityInstanceByClass(AbilityClass);
+		bool bPrevalidatedReactivation = false;
 	
 	if (AbilityInstance->InstancingPolicy == EAbilityInstancingPolicy::SingleInstance && AbilityInstance->IsActive)
 	{
-		if (!AbilityInstance->HandleReactivationWhileActive(AbilityContext, false))
+		// Preflight every admission check while the predecessor is intact.
+			if (!AbilityInstance->PreflightReactivation(AbilityContext))
+			{
+				if (ShouldTrackState)
+					RecordRejectedActivation(AbilityID, AbilityClass, AbilityContext, ActivationTime,
+						ActivatedOn, EAbilityActivationFailureReason::ReactivationRefused);
+				return false;
+			}
+			const bool bCanReplace = AbilityInstance->HandleReactivationWhileActive(AbilityContext, false);
+			bPrevalidatedReactivation = bCanReplace;
+			if (!bCanReplace)
 		{
 			SIMPLE_LOG(this, FString::Printf(TEXT("[USimpleGameplayAbilityComponent::ActivateAbility]: Active instance of %s rejected reactivation."), *AbilityClass->GetName()));
 
@@ -547,7 +558,10 @@ bool USimpleGameplayAbilityComponent::ActivateAbilityInternal(
 	}
 
 	AbilityInstance->Initialize(this, GetSimpleAttributeComponent_Implementation(), AbilityID);
-	return AbilityInstance->ActivateAbility(AbilityContext);;
+	// Supersession teardown can remove tags: use the already admitted context.
+		return bPrevalidatedReactivation
+			? AbilityInstance->ActivateAbilityPrevalidated(AbilityContext)
+			: AbilityInstance->ActivateAbility(AbilityContext);
 }
 
 void USimpleGameplayAbilityComponent::ServerActivateAbility_Implementation(

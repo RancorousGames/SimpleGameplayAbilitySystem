@@ -10,6 +10,12 @@ bool USimpleAbilityBase::ActivateAbility(FInstancedStruct ActivationContext)
 		return false;
 	}
 
+	return ActivateAbilityPrevalidated(MoveTemp(ActivationContext));
+}
+
+bool USimpleAbilityBase::ActivateAbilityPrevalidated(FInstancedStruct ActivationContext)
+{
+	AbilityContext = MoveTemp(ActivationContext);
 	IsActive = true;
 	PreActivateInternal();
 	OnPreActivate();

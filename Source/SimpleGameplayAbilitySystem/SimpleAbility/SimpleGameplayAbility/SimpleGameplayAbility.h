@@ -134,6 +134,9 @@ public:
 	 */
 	virtual bool HandleReactivationWhileActive(const FInstancedStruct& NewActivationContext, bool bMustReplace);
 
+		/** Complete preflight against incoming context; restores the running activation context. */
+		bool PreflightReactivation(const FInstancedStruct& NewActivationContext);
+
 	/**
 	 * Client only: the server confirmed or revised the activation this instance is running (an ActivationSuccess state
 	 * with this AbilityID and a newer revision). Authoritative may carry a validated timestamp or a corrected activation
