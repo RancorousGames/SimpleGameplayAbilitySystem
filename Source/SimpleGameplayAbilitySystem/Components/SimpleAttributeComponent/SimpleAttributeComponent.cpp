@@ -108,7 +108,9 @@ void USimpleAttributeComponent::BeginPlay()
 
 	// Only initialize local state if we've already received initial replication data
 	// Otherwise, the FastArraySerializer callbacks will populate the local state
-	if (AuthorityFloatAttributes.Attributes.Num() > 0)
+	// A client with only owner-private attributes must still initialize them.
+	if (!AuthorityFloatAttributes.Attributes.IsEmpty()
+        || !AuthorityOwnerOnlyFloatAttributes.Attributes.IsEmpty())
 	{
 		LocalFloatAttributes = AuthorityFloatAttributes.Attributes;
         for (const FFloatAttribute& PrivateAttribute : AuthorityOwnerOnlyFloatAttributes.Attributes)
