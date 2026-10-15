@@ -1,4 +1,4 @@
-﻿#include "SimpleAttributeComponent.h"
+#include "SimpleAttributeComponent.h"
 
 #include "GameFramework/GameStateBase.h"
 #include "Net/UnrealNetwork.h"
@@ -86,7 +86,13 @@ void USimpleAttributeComponent::BeginPlay()
 	AuthorityFloatAttributes.OnFloatAttributeChanged.BindUObject(
 		this, &USimpleAttributeComponent::ClientOnFloatAttributeChanged);
 	AuthorityFloatAttributes.OnFloatAttributeRemoved.BindUObject(
-		this, &USimpleAttributeComponent::ClientOnFloatAttributeRemoved);
+        this, &USimpleAttributeComponent::ClientOnFloatAttributeRemoved);
+    AuthorityOwnerOnlyFloatAttributes.OnFloatAttributeAdded.BindUObject(
+        this, &USimpleAttributeComponent::ClientOnFloatAttributeAdded);
+    AuthorityOwnerOnlyFloatAttributes.OnFloatAttributeChanged.BindUObject(
+        this, &USimpleAttributeComponent::ClientOnFloatAttributeChanged);
+    AuthorityOwnerOnlyFloatAttributes.OnFloatAttributeRemoved.BindUObject(
+        this, &USimpleAttributeComponent::ClientOnFloatAttributeRemoved);
 
 	AuthorityStructAttributes.OnStructAttributeAdded.BindUObject(
 		this, &USimpleAttributeComponent::ClientOnStructAttributeAdded);
@@ -105,6 +111,8 @@ void USimpleAttributeComponent::BeginPlay()
 	if (AuthorityFloatAttributes.Attributes.Num() > 0)
 	{
 		LocalFloatAttributes = AuthorityFloatAttributes.Attributes;
+        for (const FFloatAttribute& PrivateAttribute : AuthorityOwnerOnlyFloatAttributes.Attributes)
+            LocalFloatAttributes.AddUnique(PrivateAttribute);
 	}
 	if (AuthorityStructAttributes.Attributes.Num() > 0)
 	{
@@ -282,51 +290,66 @@ FGameplayTagContainer USimpleAttributeComponent::GetActiveGameplayTags() const
 
 /* Float Attributes */
 
+void USimpleAttributeComponent::MarkFloatAttributeDirty(FFloatAttribute& Attribute)
+{
+    if (Attribute.Replication == EAttributeReplication::OwnerOnly)
+        AuthorityOwnerOnlyFloatAttributes.MarkItemDirty(Attribute);
+    else
+        AuthorityFloatAttributes.MarkItemDirty(Attribute);
+}
+
 void USimpleAttributeComponent::AddFloatAttribute(FFloatAttribute AttributeToAdd, bool OverrideValuesIfExists)
 {
-	if (!HasAuthority())
-	{
-		SIMPLE_LOG(this, TEXT("[USimpleAttributeComponent::AddFloatAttribute]: Cannot add float attribute on client!"));
-		return;
-	}
+    if (!HasAuthority()) return;
+    FFloatAttribute* Existing = GetFloatAttribute(AttributeToAdd.AttributeTag);
+    if (Existing)
+    {
+        if (!OverrideValuesIfExists) return;
+        if (Existing->Replication == AttributeToAdd.Replication)
+        {
+            *Existing = AttributeToAdd;
+            MarkFloatAttributeDirty(*Existing);
+            return;
+        }
+        // Moving containers is mandatory: a public array must never keep a stale
+        // copy of an attribute newly marked private.
+        AuthorityFloatAttributes.Attributes.RemoveAll([&](const FFloatAttribute& A)
+            { return A.AttributeTag.MatchesTagExact(AttributeToAdd.AttributeTag); });
+        AuthorityOwnerOnlyFloatAttributes.Attributes.RemoveAll([&](const FFloatAttribute& A)
+            { return A.AttributeTag.MatchesTagExact(AttributeToAdd.AttributeTag); });
+        AuthorityFloatAttributes.MarkArrayDirty();
+        AuthorityOwnerOnlyFloatAttributes.MarkArrayDirty();
+    }
+    FFloatAttributeContainer& Destination = AttributeToAdd.Replication == EAttributeReplication::OwnerOnly
+        ? AuthorityOwnerOnlyFloatAttributes : AuthorityFloatAttributes;
+    FFloatAttribute& Added = Destination.Attributes.Add_GetRef(AttributeToAdd);
+    Destination.MarkItemDirty(Added);
+    if (!Existing) OnFloatAttributeAdded.Broadcast(AttributeToAdd.AttributeTag, AttributeToAdd);
+}
 
-	for (FFloatAttribute& AuthorityAttribute : AuthorityFloatAttributes.Attributes)
-	{
-		if (AuthorityAttribute.AttributeTag.MatchesTagExact(AttributeToAdd.AttributeTag))
-		{
-			// Attribute exists but we don't want to override it
-			if (!OverrideValuesIfExists)
-			{
-				return;
-			}
-
-			// Attribute exists and we want to override it
-			AuthorityAttribute = AttributeToAdd;
-			AuthorityFloatAttributes.MarkItemDirty(AuthorityAttribute);
-			return;
-		}
-	}
-
-	AuthorityFloatAttributes.Attributes.Add(AttributeToAdd);
-	AuthorityFloatAttributes.MarkItemDirty(AttributeToAdd);
-
-	OnFloatAttributeAdded.Broadcast(AttributeToAdd.AttributeTag, AttributeToAdd);
+bool USimpleAttributeComponent::SetFloatAttributeReplication(
+    FGameplayTag AttributeTag, EAttributeReplication Replication)
+{
+    if (!HasAuthority()) return false;
+    const FFloatAttribute* Existing = GetFloatAttribute(AttributeTag);
+    if (!Existing) return false;
+    if (Existing->Replication == Replication) return true;
+    FFloatAttribute Copy = *Existing;
+    Copy.Replication = Replication;
+    AddFloatAttribute(Copy, true);
+    return true;
 }
 
 void USimpleAttributeComponent::RemoveFloatAttribute(FGameplayTag AttributeTag)
 {
-	if (!HasAuthority())
-	{
-		SIMPLE_LOG(this, TEXT("[USimpleAttributeComponent::RemoveFloatAttribute]: Cannot remove float attribute on client!"));
-		return;
-	}
-
-	AuthorityFloatAttributes.Attributes.RemoveAll([AttributeTag](const FFloatAttribute& Attribute)
-	{
-		return Attribute.AttributeTag == AttributeTag;
-	});
-	AuthorityFloatAttributes.MarkArrayDirty();
-	OnFloatAttributeRemoved.Broadcast(AttributeTag);
+    if (!HasAuthority()) return;
+    const int32 PublicRemoved = AuthorityFloatAttributes.Attributes.RemoveAll([&](const FFloatAttribute& A)
+        { return A.AttributeTag.MatchesTagExact(AttributeTag); });
+    const int32 PrivateRemoved = AuthorityOwnerOnlyFloatAttributes.Attributes.RemoveAll([&](const FFloatAttribute& A)
+        { return A.AttributeTag.MatchesTagExact(AttributeTag); });
+    if (PublicRemoved) AuthorityFloatAttributes.MarkArrayDirty();
+    if (PrivateRemoved) AuthorityOwnerOnlyFloatAttributes.MarkArrayDirty();
+    if (PublicRemoved || PrivateRemoved) OnFloatAttributeRemoved.Broadcast(AttributeTag);
 }
 
 bool USimpleAttributeComponent::HasFloatAttribute(const FGameplayTag AttributeTag)
@@ -524,7 +547,7 @@ bool USimpleAttributeComponent::SetFloatAttributeValue(EFloatAttributeValueType 
 
 	if (HasAuthority())
 	{
-		AuthorityFloatAttributes.MarkItemDirty(*Attribute);
+		MarkFloatAttributeDirty(*Attribute);
 	}
 
 	return true;
@@ -547,32 +570,10 @@ bool USimpleAttributeComponent::IncrementFloatAttributeValue(EFloatAttributeValu
 
 bool USimpleAttributeComponent::OverrideFloatAttribute(FGameplayTag AttributeTag, FFloatAttribute NewAttribute)
 {
-	if (!HasAuthority())
-	{
-		SIMPLE_LOG(this, TEXT("[USimpleAttributeComponent::OverrideFloatAttribute]: Cannot override float attribute on client!"));
-		return false;
-	}
-
-	for (FFloatAttribute& Attribute : AuthorityFloatAttributes.Attributes)
-	{
-		if (Attribute.AttributeTag.MatchesTagExact(AttributeTag))
-		{
-			Attribute.AttributeName = NewAttribute.AttributeName;
-			Attribute.AttributeTag = NewAttribute.AttributeTag;
-			Attribute.BaseValue = NewAttribute.BaseValue;
-			Attribute.CurrentValue = NewAttribute.CurrentValue;
-			Attribute.ValueLimits = NewAttribute.ValueLimits;
-
-			AuthorityFloatAttributes.MarkItemDirty(Attribute);
-
-			return true;
-		}
-	}
-
-	SIMPLE_LOG(this, FString::Printf(
-		           TEXT("[USimpleAttributeFunctionLibrary::OverrideFloatAttribute]: Attribute %s not found."),
-		           *AttributeTag.ToString()));
-	return false;
+    if (!HasAuthority() || !GetFloatAttribute(AttributeTag)) return false;
+    NewAttribute.AttributeTag = AttributeTag;
+    AddFloatAttribute(NewAttribute, true);
+    return true;
 }
 
 float USimpleAttributeComponent::ClampFloatAttributeValue(const FFloatAttribute& Attribute,
@@ -661,17 +662,14 @@ FStructAttribute USimpleAttributeComponent::GetStructAttributeCopy(FGameplayTag 
 
 FFloatAttribute* USimpleAttributeComponent::GetFloatAttribute(FGameplayTag AttributeTag)
 {
-	TArray<FFloatAttribute>& FloatAttributes = HasAuthority() ? AuthorityFloatAttributes.Attributes : LocalFloatAttributes;
-
-	for (FFloatAttribute& FloatAttribute : FloatAttributes)
-	{
-		if (FloatAttribute.AttributeTag.MatchesTagExact(AttributeTag))
-		{
-			return &FloatAttribute;
-		}
-	}
-
-	return nullptr;
+    TArray<FFloatAttribute>& Public = HasAuthority()
+        ? AuthorityFloatAttributes.Attributes : LocalFloatAttributes;
+    for (FFloatAttribute& Attribute : Public)
+        if (Attribute.AttributeTag.MatchesTagExact(AttributeTag)) return &Attribute;
+    if (HasAuthority())
+        for (FFloatAttribute& Attribute : AuthorityOwnerOnlyFloatAttributes.Attributes)
+            if (Attribute.AttributeTag.MatchesTagExact(AttributeTag)) return &Attribute;
+    return nullptr;
 }
 
 FStructAttribute* USimpleAttributeComponent::GetStructAttribute(FGameplayTag AttributeTag)
@@ -733,7 +731,7 @@ void USimpleAttributeComponent::MaterializeFloat(FGameplayTag AttributeTag)
 	A->LastRegenParamsUpdateTime_Server = GetServerTime();
 	if (HasAuthority())
 	{
-		AuthorityFloatAttributes.MarkItemDirty(*A);
+		MarkFloatAttributeDirty(*A);
 	}
 }
 
@@ -749,7 +747,7 @@ void USimpleAttributeComponent::StartFloatRegen(FGameplayTag AttributeTag)
 	A->LastRegenParamsUpdateTime_Server = GetServerTime();
 	if (HasAuthority())
 	{
-		AuthorityFloatAttributes.MarkItemDirty(*A);
+		MarkFloatAttributeDirty(*A);
 	}
 }
 
@@ -764,7 +762,7 @@ void USimpleAttributeComponent::StopFloatRegen(FGameplayTag AttributeTag)
 	A->bIsRegenerating = false;
 	if (HasAuthority())
 	{
-		AuthorityFloatAttributes.MarkItemDirty(*A);
+		MarkFloatAttributeDirty(*A);
 	}
 }
 
@@ -2213,6 +2211,7 @@ FAttributeSnapshot USimpleAttributeComponent::CaptureAttributeSnapshot() const
 {
 	FAttributeSnapshot Snapshot;
 	Snapshot.FloatAttributes = HasAuthority() ? AuthorityFloatAttributes.Attributes : LocalFloatAttributes;
+    if (HasAuthority()) Snapshot.FloatAttributes.Append(AuthorityOwnerOnlyFloatAttributes.Attributes);
 	Snapshot.StructAttributes = HasAuthority() ? AuthorityStructAttributes.Attributes : LocalStructAttributes;
 	Snapshot.GameplayTags = HasAuthority() ? AuthorityGameplayTags.Tags : LocalGameplayTags;
 	return Snapshot;
@@ -2396,6 +2395,7 @@ void USimpleAttributeComponent::GetLifetimeReplicatedProps(TArray<class FLifetim
 {
 	DOREPLIFETIME(USimpleAttributeComponent, AuthorityGameplayTags);
 	DOREPLIFETIME(USimpleAttributeComponent, AuthorityFloatAttributes);
+    DOREPLIFETIME_CONDITION(USimpleAttributeComponent, AuthorityOwnerOnlyFloatAttributes, COND_OwnerOnly);
 	DOREPLIFETIME(USimpleAttributeComponent, AuthorityStructAttributes);
 	DOREPLIFETIME(USimpleAttributeComponent, AuthorityAttributeModifierStates);
 	DOREPLIFETIME(USimpleAttributeComponent, AuthorityAttributeModifierMutations);

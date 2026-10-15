@@ -26,6 +26,10 @@ enum class EAttributeType : uint8
 	StructAttribute,
 };
 
+/** Replication audience for a float attribute; owner-only values never enter the public FastArray. */
+UENUM(BlueprintType)
+enum class EAttributeReplication : uint8 { All, OwnerOnly };
+
 /* Structs */
 
 USTRUCT(BlueprintType)
@@ -137,6 +141,9 @@ struct FFloatAttribute : public FFastArraySerializerItem
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	float BaseValue{};
+
+        UPROPERTY(EditAnywhere, BlueprintReadWrite)
+        EAttributeReplication Replication = EAttributeReplication::All;
 	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	float CurrentValue{};

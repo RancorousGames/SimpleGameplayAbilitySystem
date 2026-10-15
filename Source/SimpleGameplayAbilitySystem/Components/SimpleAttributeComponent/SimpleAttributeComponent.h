@@ -48,6 +48,10 @@ public:
 	// Float Attributes
 	UPROPERTY(VisibleAnywhere, Replicated, Category = "AttributeComponent|State", meta = (TitleProperty = "Attributes.AttributeName"))
 	FFloatAttributeContainer AuthorityFloatAttributes;
+
+    /** Sensitive float attributes replicated only to the owning player. */
+    UPROPERTY(Replicated)
+    FFloatAttributeContainer AuthorityOwnerOnlyFloatAttributes;
 	UPROPERTY(VisibleAnywhere, Category = "AttributeComponent|State", meta = (TitleProperty = "AttributeName"))
 	TArray<FFloatAttribute> LocalFloatAttributes;
 
@@ -404,6 +408,10 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = "AttributeComponent|Attributes")
 	void RemoveFloatAttribute(FGameplayTag AttributeTag);
 
+    /** Move an existing float attribute between the public and owner-only containers. */
+    UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = "AttributeComponent|Attributes")
+    bool SetFloatAttributeReplication(FGameplayTag AttributeTag, EAttributeReplication Replication);
+
 	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = "AttributeComponent|Attributes", meta = (AdvancedDisplay=1))
 	void AddStructAttribute(FStructAttribute AttributeToAdd, bool OverrideValuesIfExists = true);
 
@@ -448,6 +456,7 @@ public:
 	FStructAttribute GetStructAttributeCopy(FGameplayTag AttributeTag);
 	
 	FFloatAttribute* GetFloatAttribute(FGameplayTag AttributeTag);
+    void MarkFloatAttributeDirty(FFloatAttribute& Attribute);
 	FStructAttribute* GetStructAttribute(FGameplayTag AttributeTag);
 	
 	/* Gameplay Tag Functions */
