@@ -32,7 +32,7 @@
         },
         {
             "Name": "SimpleGameplayAbilitySystemTest",
-            "Type": "Editor",
+            "Type": "EditorNoCommandlet",
             "LoadingPhase": "Default"
         }
     ],
