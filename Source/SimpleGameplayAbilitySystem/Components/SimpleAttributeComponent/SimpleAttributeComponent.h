@@ -112,6 +112,16 @@ public:
 		UObject* Sender,
 		const TArray<UObject*>& ListenerFilter);
 
+	/** SendEventToServer from a client: delivered on the server only (ServerSendEvent also multicasts). */
+	UFUNCTION(Server, Reliable)
+	void ServerOnlySendEvent(
+		const FGuid& EventID,
+		FGameplayTag EventTag,
+		FGameplayTag DomainTag,
+		const FInstancedStruct& Payload,
+		UObject* Sender,
+		const TArray<UObject*>& ListenerFilter);
+
 	UFUNCTION(Client, Reliable)
 	void ClientSendEvent(
 		const FGuid& EventID,
@@ -531,10 +541,10 @@ protected:
 
 private:
 
-	/** Event IDs that were sent locally to prevent duplicate processing from multicasts (NOT replicated) */
-	TSet<FGuid> LocallySentEventIDs;
-
-	/** Timestamps of when EventIDs were added for periodic cleanup (NOT replicated) */
+	/**
+	 * Event IDs already processed here, with the world time they were first seen. Lets the sender ignore the server's
+	 * multicast echo of its own event; pruned periodically. (NOT replicated)
+	 */
 	TMap<FGuid, double> EventIDTimestamps;
 
 	/** Timer handle for periodic EventID cleanup */
@@ -552,7 +562,28 @@ private:
 		UObject* Sender,
 		const TArray<UObject*>& ListenerFilter);
 
+	/**
+	 * Modifier instance lifetime: an instance lives in InstancedAttributeModifiers of the component that applied it
+	 * (the instigator) from creation until it stops. Every stop (end, cancel, refused application) releases it.
+	 */
+
+	/** The instance with this ID that is still held here, if any. */
+	USimpleAttributeModifier* FindModifierInstance(const FGuid& ModifierID) const;
+	/** Returns the held instance with this ID, or creates and initializes a new one. */
 	USimpleAttributeModifier* GetAttributeModifierInstance(const TSubclassOf<USimpleAttributeModifier>& ModifierClass, FGuid NewModifierID, USimpleAttributeComponent* Instigator, USimpleAttributeComponent* Target, float Magnitude, const FInstancedStruct Context, const bool DoesReplicate);
+	/**
+	 * Applies a freshly created instance and releases it again if it did not stay active (refused, or instant).
+	 * InitialStackCount > 0 seeds consolidated stacking; 0 leaves the stack state untouched.
+	 */
+	bool ApplyModifierInstance(USimpleAttributeModifier* Modifier, int32 InitialStackCount);
+	/** Unsubscribes a stopped instance from the event subsystem and drops it. Safe to call more than once. */
+	void ReleaseModifierInstance(USimpleAttributeModifier* Modifier);
+	/** Builds the replicated/predicted state describing a modifier instance right now. */
+	FAttributeModifierState MakeModifierState(const USimpleAttributeModifier& ModifierInstance, EModifierStatus Status);
+	/** Shared tail of OnAttributeModifierEnded/Cancelled: stamps the tracked state terminal and releases the instance. */
+	void RecordModifierStopped(USimpleAttributeModifier* ModifierInstance, EModifierStatus TerminalStatus);
+	/** Client: reconciles one authoritative modifier state with what this machine predicted or already ran. */
+	void ClientResolveModifierState(const FAttributeModifierState& AuthorityState);
 
 	/** Captures current attribute state for rollback */
 	FAttributeSnapshot CaptureAttributeSnapshot() const;

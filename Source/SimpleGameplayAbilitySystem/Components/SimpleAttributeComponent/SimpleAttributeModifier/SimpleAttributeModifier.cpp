@@ -54,8 +54,11 @@ void USimpleAttributeModifier::InitializeModifier(FGuid NewModifierID, USimpleAt
 	WasInitialized = true;
 	DoesModifierReplicate = DoesReplicate;
 
-	// Subscribe to SimpleEventSubsystem for all events
-	if (USimpleEventSubsystem* EventSubsystem = TargetAttributeComponent->GetWorld()->GetGameInstance()->GetSubsystem<USimpleEventSubsystem>())
+	// Subscribe to SimpleEventSubsystem for all events. A re-initialized instance keeps the subscription it has.
+	const UWorld* World = GetWorld();
+	UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr;
+	USimpleEventSubsystem* EventSubsystem = GameInstance ? GameInstance->GetSubsystem<USimpleEventSubsystem>() : nullptr;
+	if (EventSubsystem && !GlobalEventSubscriptionID.IsValid())
 	{
 		FSimpleEventDelegate EventCallback;
 		EventCallback.BindDynamic(this, &USimpleAttributeModifier::OnModifierEventReceived);
@@ -93,7 +96,8 @@ bool USimpleAttributeModifier::ApplyModifier()
 	
 	if (!CanApplyModifierInternal())
 	{
-		CancelModifier(FDefaultTags::AttributeModifierCancelled(), FInstancedStruct());
+		// Refused before becoming active: report the cancellation (a replicating modifier tells the predicting client).
+		StopModifier(true, false, FDefaultTags::AttributeModifierCancelled(), FInstancedStruct());
 		return false;
 	}
 	
@@ -158,52 +162,84 @@ bool USimpleAttributeModifier::ApplyModifier()
 
 void USimpleAttributeModifier::EndModifier(FGameplayTag EndingStatus, FInstancedStruct EndingContext)
 {
-	// Send the Ended event
-	TriggerActionsWithEventTriggers(FGameplayTagContainer::CreateFromArray(TArray({ FDefaultTags::AttributeModifierEnded() })));
-
-	if (DurationType == EAttributeModifierDurationType::SetDuration || DurationType == EAttributeModifierDurationType::InfiniteDuration)
+	if (IsActive)
 	{
-		InstigatorAttributeComponent->GetWorld()->GetTimerManager().ClearTimer(DurationTimerHandle);
-		InstigatorAttributeComponent->GetWorld()->GetTimerManager().ClearTimer(TickTimerHandle);
-
-		for (const FGameplayTag& Tag : TemporarilyAppliedTags)
-		{
-			TargetAttributeComponent->RemoveGameplayTag(Tag);
-		}
-	}
-
-	IsActive = false;
-	OnModifierEnded(EndingStatus, EndingContext);
-
-	if (DoesModifierReplicate)
-	{
-		OnAttributeModifierEnded.Broadcast(this, EndingStatus, EndingContext);
+		StopModifier(false, true, EndingStatus, EndingContext);
 	}
 }
 
 void USimpleAttributeModifier::CancelModifier(FGameplayTag EndingStatus, FInstancedStruct EndingContext)
 {
-	// Send the Cancelled event
-	TriggerActionsWithEventTriggers(FGameplayTagContainer::CreateFromArray(TArray({ FDefaultTags::AttributeModifierCancelled() })));
-
-	if (DurationType == EAttributeModifierDurationType::SetDuration || DurationType == EAttributeModifierDurationType::InfiniteDuration)
+	if (IsActive)
 	{
-		InstigatorAttributeComponent->GetWorld()->GetTimerManager().ClearTimer(DurationTimerHandle);
-		InstigatorAttributeComponent->GetWorld()->GetTimerManager().ClearTimer(TickTimerHandle);
+		StopModifier(true, true, EndingStatus, EndingContext);
+	}
+}
 
+void USimpleAttributeModifier::StopModifier(const bool bCancelled, const bool bWasApplied, const FGameplayTag& StopStatus, const FInstancedStruct& StopContext)
+{
+	// The actions and callbacks below are game code and may try to end or cancel this modifier again.
+	if (bIsStopping)
+	{
+		return;
+	}
+	TGuardValue<bool> StoppingGuard(bIsStopping, true);
+
+	// Send the Ended/Cancelled event
+	const FGameplayTag StopEvent = bCancelled ? FDefaultTags::AttributeModifierCancelled() : FDefaultTags::AttributeModifierEnded();
+	TriggerActionsWithEventTriggers(FGameplayTagContainer(StopEvent));
+
+	if (bWasApplied)
+	{
+		ReleaseTimersAndTemporaryTags();
+	}
+
+	IsActive = false;
+
+	if (bCancelled)
+	{
+		OnModifierCancelled(StopStatus, StopContext);
+		OnAttributeModifierCancelled.Broadcast(this, StopStatus, StopContext);
+	}
+	else
+	{
+		OnModifierEnded(StopStatus, StopContext);
+		OnAttributeModifierEnded.Broadcast(this, StopStatus, StopContext);
+	}
+}
+
+void USimpleAttributeModifier::ReleaseTimersAndTemporaryTags()
+{
+	// The world is gone during teardown; its timers go with it.
+	if (const UWorld* World = GetWorld())
+	{
+		FTimerManager& TimerManager = World->GetTimerManager();
+		TimerManager.ClearTimer(DurationTimerHandle);
+		TimerManager.ClearTimer(TickTimerHandle);
+		for (TPair<int32, FTimerHandle>& StackTimer : StackDurationTimerHandles)
+		{
+			TimerManager.ClearTimer(StackTimer.Value);
+		}
+	}
+	StackDurationTimerHandles.Empty();
+
+	// Temporary tags are only held while a duration modifier is active. The target may already have been destroyed.
+	const bool bHoldsTemporaryTags = IsActive
+		&& (DurationType == EAttributeModifierDurationType::SetDuration || DurationType == EAttributeModifierDurationType::InfiniteDuration);
+	if (bHoldsTemporaryTags && IsValid(TargetAttributeComponent))
+	{
 		for (const FGameplayTag& Tag : TemporarilyAppliedTags)
 		{
 			TargetAttributeComponent->RemoveGameplayTag(Tag);
 		}
 	}
+}
 
+void USimpleAttributeModifier::AbortWithoutNotify()
+{
+	ReleaseTimersAndTemporaryTags();
 	IsActive = false;
-	OnModifierCancelled(EndingStatus, EndingContext);
-
-	if (DoesModifierReplicate)
-	{
-		OnAttributeModifierCancelled.Broadcast(this, EndingStatus, EndingContext);
-	}
+	OnCleanupModifier();
 }
 
 bool USimpleAttributeModifier::CanApplyModifierInternal()
@@ -251,14 +287,16 @@ bool USimpleAttributeModifier::CanApplyModifierInternal()
 
 void USimpleAttributeModifier::OnCleanupModifier_Implementation()
 {
-	// Unsubscribe from SimpleEventSubsystem
+	// Unsubscribe from SimpleEventSubsystem. The target (or the whole world) may already be gone.
 	if (GlobalEventSubscriptionID.IsValid())
 	{
-		if (USimpleEventSubsystem* EventSubsystem = TargetAttributeComponent->GetWorld()->GetGameInstance()->GetSubsystem<USimpleEventSubsystem>())
+		const UWorld* World = GetWorld();
+		UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr;
+		if (USimpleEventSubsystem* EventSubsystem = GameInstance ? GameInstance->GetSubsystem<USimpleEventSubsystem>() : nullptr)
 		{
 			EventSubsystem->StopListeningForEventSubscriptionByID(GlobalEventSubscriptionID);
-			GlobalEventSubscriptionID.Invalidate();
 		}
+		GlobalEventSubscriptionID.Invalidate();
 	}
 }
 

@@ -19,6 +19,23 @@
     { enum { WithNetDeltaSerializer = true }; };
 
 
+/**
+ * Overwrites a fast-array element's payload while keeping its replication identity. Plain assignment of a
+ * FFastArraySerializerItem resets the element's ReplicationID, which clients see as a removal followed by an add
+ * instead of a change. Call the container's MarkItemDirty on the element afterwards.
+ */
+template<typename TItem>
+void AssignKeepingReplicationIdentity(TItem& Element, const TItem& NewValue)
+{
+    const int32 ReplicationID = Element.ReplicationID;
+    const int32 ReplicationKey = Element.ReplicationKey;
+    const int32 MostRecentArrayReplicationKey = Element.MostRecentArrayReplicationKey;
+    Element = NewValue;
+    Element.ReplicationID = ReplicationID;
+    Element.ReplicationKey = ReplicationKey;
+    Element.MostRecentArrayReplicationKey = MostRecentArrayReplicationKey;
+}
+
 template<typename TItem>
 class IFastArrayItemHost
 {

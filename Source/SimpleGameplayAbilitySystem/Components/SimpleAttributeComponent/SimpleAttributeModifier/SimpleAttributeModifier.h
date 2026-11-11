@@ -248,11 +248,19 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Attribute Modifier|Application", meta = (AdvancedDisplay=3))
 	bool ApplyModifier();
 
+	/** Ends an active modifier. Does nothing if the modifier is not active (stopping is one-shot). */
 	UFUNCTION(BlueprintCallable, Category = "Attribute Modifier|Application")
 	void EndModifier(FGameplayTag EndingStatus, FInstancedStruct EndingContext);
 
+	/** Cancels an active modifier. Does nothing if the modifier is not active (stopping is one-shot). */
 	UFUNCTION(BlueprintCallable, Category = "Attribute Modifier|Application")
 	void CancelModifier(FGameplayTag EndingStatus, FInstancedStruct EndingContext);
+
+	/**
+	 * Tears an instance down without running actions, lifecycle events or delegates: clears its timers, takes back the
+	 * temporary tags of an active modifier and unsubscribes it. Used by the owning component when it is destroyed.
+	 */
+	void AbortWithoutNotify();
 
 	/**
 	 * Get the remaining duration in seconds (returns 0 if not a SetDuration modifier or if already expired).
@@ -373,6 +381,9 @@ public:
 
 	bool WasModifierInitialized() const { return WasInitialized; }
 
+	/** True if the owning component tracks this modifier in its replicated/predicted state arrays. */
+	bool DoesReplicate() const { return DoesModifierReplicate; }
+
 	// UObject interface
 	virtual void PostLoad() override;
 
@@ -409,6 +420,16 @@ private:
 
 	void OnDurationTimerExpired();
 	void OnTickTimerTriggered();
+
+	/**
+	 * Shared body of EndModifier/CancelModifier. bWasApplied is false for an application that was refused before the
+	 * modifier became active: it reports the cancellation but has no timers or temporary tags to take back.
+	 */
+	void StopModifier(bool bCancelled, bool bWasApplied, const FGameplayTag& StopStatus, const FInstancedStruct& StopContext);
+	/** Clears every timer this modifier owns and removes its temporary tags from the target, if both still exist. */
+	void ReleaseTimersAndTemporaryTags();
+	/** True while StopModifier runs, so actions and callbacks triggered by the stop cannot stop the modifier again. */
+	bool bIsStopping = false;
 	
 	UFUNCTION()
 	void OnModifierEventReceived(FGameplayTag EventTag, FGameplayTag DomainTag, FInstancedStruct Payload, UObject* Sender);

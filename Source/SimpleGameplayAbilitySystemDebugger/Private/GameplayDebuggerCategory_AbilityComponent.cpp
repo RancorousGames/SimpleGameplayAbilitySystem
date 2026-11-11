@@ -109,7 +109,7 @@ void FGameplayDebuggerCategory_AbilityComponent::CollectData(APlayerController* 
 	}
 
 	// Collect snapshot counts
-	DataPack.DeferredSnapshotCount = AbilityComp->DeferredSnapshots.Num();
+	DataPack.DeferredSnapshotCount = 0 /* snapshots are no longer deferred: both sides resolve on arrival */;
 	DataPack.PendingSnapshotCount = AbilityComp->LocalPendingAbilitySnapshots.Num();
 }
 
@@ -231,7 +231,7 @@ void FGameplayDebuggerCategory_AbilityComponent::DrawData(APlayerController* Own
 				LocalStates.Add(Data);
 			}
 
-			LocalDeferredCount = AbilityComp->DeferredSnapshots.Num();
+			LocalDeferredCount = 0 /* snapshots are no longer deferred: both sides resolve on arrival */;
 			LocalPendingCount = AbilityComp->LocalPendingAbilitySnapshots.Num();
 		}
 	}

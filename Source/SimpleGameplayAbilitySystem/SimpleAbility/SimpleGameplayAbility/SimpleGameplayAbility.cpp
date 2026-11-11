@@ -6,13 +6,17 @@
 #include "SimpleGameplayAbilitySystem/Components/SimpleGameplayAbilityComponent/SimpleGameplayAbilityComponent.h"
 #include "SimpleGameplayAbilitySystem/SimpleAbility/SimpleSubAbility/SimpleSubAbility.h"
 
-void USimpleGameplayAbility::Initialize(USimpleGameplayAbilityComponent* ActivatingAbilityComponent, USimpleAttributeComponent* ActivatingAttributeComponent, const FGuid NewAbilityID)
+void USimpleGameplayAbility::Initialize(USimpleGameplayAbilityComponent* ActivatingAbilityComponent, USimpleAttributeComponent* ActivatingAttributeComponent, const FGuid NewAbilityID, const double InActivationTime)
 {
 	AbilityID = NewAbilityID;
 	AbilityComponent = ActivatingAbilityComponent;
 	// Cache a reference to the attribute component
 	AttributeComponent = ActivatingAttributeComponent;
-	ActivationTime = AbilityComponent->GetServerTime();
+	ActivationTime = InActivationTime >= 0.0 ? InActivationTime : AbilityComponent->GetServerTime();
+
+	// Snapshots belong to one activation: a reused SingleInstance must not resolve the previous run's callbacks.
+	PendingSnapshots.Reset();
+	NextSnapshotCounter = 0;
 
 	OnAbilityInitialized();
 }
@@ -242,8 +246,10 @@ void USimpleGameplayAbility::TakeStateSnapshot(const FInstancedStruct SnapshotDa
 		return;
 	}
 
-	const int32 SnapshotCounter = AbilityComponent->AddGameplayAbilitySnapshot(AbilityID, SnapshotData);
+	// Register the callback first: on a client the server's snapshot may already be here and resolve immediately.
+	const int32 SnapshotCounter = NextSnapshotCounter++;
 	PendingSnapshots.Add(SnapshotCounter, OnResolved);
+	AbilityComponent->AddGameplayAbilitySnapshot(AbilityID, SnapshotCounter, SnapshotData);
 }
 
 EAbilityNetworkRole USimpleGameplayAbility::GetNetworkRole() const

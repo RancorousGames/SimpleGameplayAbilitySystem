@@ -26,6 +26,11 @@ bool USimpleAbilityBase::ActivateAbilityPrevalidated(FInstancedStruct Activation
 
 void USimpleAbilityBase::EndAbility(FGameplayTag EndStatus, FInstancedStruct EndContext)
 {
+	// Stopping is one-shot: a second End/Cancel (re-entrant or late) must not replay OnEnd, cooldowns or state changes.
+	if (!IsActive)
+	{
+		return;
+	}
 	IsActive = false;
 	AbilityEndedInternal(EndContext, false);
 	OnEnd(EndStatus, EndContext);
@@ -35,6 +40,10 @@ void USimpleAbilityBase::EndAbility(FGameplayTag EndStatus, FInstancedStruct End
 
 void USimpleAbilityBase::CancelAbility(FGameplayTag EndStatus, FInstancedStruct EndContext)
 {
+	if (!IsActive)
+	{
+		return;
+	}
 	IsActive = false;
 	AbilityEndedInternal(EndContext, true);
 	OnCancel(EndStatus, EndContext);

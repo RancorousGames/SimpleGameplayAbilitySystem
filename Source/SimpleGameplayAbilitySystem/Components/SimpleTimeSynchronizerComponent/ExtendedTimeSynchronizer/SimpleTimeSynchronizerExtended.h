@@ -132,6 +132,13 @@ public:
 	// Number of samples taken so far (used for initial burst)
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Time Sync|State")
 	int32 TotalSamplesTaken = 0;
+
+	/**
+	 * Slack in seconds added to a sample's own error bound (half its RTT) before the current estimate counts as
+	 * contradicted by it. Covers smoothing lag and ordinary clock drift between syncs.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Time Sync|Config", meta = (ClampMin = "0.0", ClampMax = "0.5"))
+	float ClockStepTolerance = 0.01f;
 	
 
 	/**
@@ -197,4 +204,17 @@ private:
 
 	// Get current local time (for client timestamps)
 	double GetLocalTime() const;
+
+	// True on the one machine that can actually sync this component: a client that owns the actor's connection.
+	bool IsSyncingClient() const;
+
+	/**
+	 * A sample bounds the true offset to its own offset +/- RTT/2, whatever the path asymmetry. An estimate outside
+	 * that bound is therefore wrong: one of the two clocks stepped (world time drops whatever a frame takes beyond
+	 * 0.4 s, and time dilation moves it too). Returns true if the sample contradicts the current estimate.
+	 */
+	bool ContradictsCurrentEstimate(const FSyncSample& Sample) const;
+
+	// Consecutive samples that contradicted the estimate. Two in a row discard the history and resync from scratch.
+	int32 ConsecutiveContradictions = 0;
 };

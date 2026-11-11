@@ -6,6 +6,14 @@ USimpleTimeSynchronizerExtended::USimpleTimeSynchronizerExtended()
 {
 	PrimaryComponentTick.bCanEverTick = true;
 	PrimaryComponentTick.bStartWithTickEnabled = true;
+	SetIsReplicatedByDefault(true);
+}
+
+bool USimpleTimeSynchronizerExtended::IsSyncingClient() const
+{
+	// The sync RPCs only travel on the owning connection. On a simulated proxy the request would just be dropped.
+	const AActor* Owner = GetOwner();
+	return Owner && !Owner->HasAuthority() && Owner->HasLocalNetOwner();
 }
 
 void USimpleTimeSynchronizerExtended::BeginPlay()
@@ -26,8 +34,8 @@ void USimpleTimeSynchronizerExtended::TickComponent(float DeltaTime, ELevelTick 
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
-	// Only tick on clients (server doesn't need to sync)
-	if (GetOwnerRole() == ROLE_Authority)
+	// Only the owning client syncs (the server is the reference, and a proxy has no connection to ask on)
+	if (!IsSyncingClient())
 	{
 		return;
 	}
@@ -74,6 +82,13 @@ double USimpleTimeSynchronizerExtended::GetServerTime_Implementation()
 		return World->GetTimeSeconds(); // Fallback to local time if GameState not ready
 	}
 
+	// Until the first sample arrives (and always on a simulated proxy, which cannot sync) there is no offset
+	// estimate; the engine's replicated game state time is the best one available.
+	if (TotalSamplesTaken == 0)
+	{
+		return Super::GetServerTime_Implementation();
+	}
+
 	// On client, return estimated server time (local time + offset)
 	return GetLocalTime() + CurrentClockOffset;
 }
@@ -117,7 +132,7 @@ float USimpleTimeSynchronizerExtended::GetSyncQuality() const
 
 void USimpleTimeSynchronizerExtended::RequestTimeSync()
 {
-	if (GetOwnerRole() != ROLE_Authority)
+	if (IsSyncingClient())
 	{
 		ServerRequestTimeSync(GetLocalTime());
 	}
@@ -144,6 +159,34 @@ void USimpleTimeSynchronizerExtended::ClientReceiveTimeSync_Implementation(doubl
 	double ClientReceiveTime = GetLocalTime();
 
 	FSyncSample NewSample(ClientSendTime, ServerReceiveTime, ServerSendTime, ClientReceiveTime);
+
+	// A response that claims to arrive before its request was sent is a duplicate or reordered packet.
+	if (NewSample.RTT < 0.0)
+	{
+		return;
+	}
+
+	if (TotalSamplesTaken > 0 && ContradictsCurrentEstimate(NewSample))
+	{
+		if (++ConsecutiveContradictions >= 2)
+		{
+			// Confirmed: the clocks stepped relative to each other. The history describes the old relation, so
+			// drop it and converge again from this sample with a fresh burst.
+			SyncSamples.Reset();
+			TotalSamplesTaken = 0;
+			ConsecutiveContradictions = 0;
+		}
+		else
+		{
+			// Could be one bad packet. Don't let it into the estimate; ask again right away to find out.
+			TimeSinceLastSync = FMath::Max(TimeSinceLastSync, FMath::Max(CurrentSyncInterval, BurstSampleInterval));
+			return;
+		}
+	}
+	else
+	{
+		ConsecutiveContradictions = 0;
+	}
 
 	ProcessSyncSample(NewSample);
 
@@ -305,20 +348,29 @@ void USimpleTimeSynchronizerExtended::RejectOutliers()
 		return;
 	}
 
-	// Calculate median RTT for outlier detection
-	double MedianRTT = CalculateMedianRTT();
+	// Judge every sample afresh against the median RTT of the whole window. Judging only against the samples that
+	// are still valid makes rejection permanent: after a lasting RTT increase every new sample is an "outlier" of
+	// the old ones, and once those roll out of the buffer no valid sample is left to ever correct the offset.
+	TArray<double> AllRTTs;
+	AllRTTs.Reserve(SyncSamples.Num());
+	for (const FSyncSample& Sample : SyncSamples)
+	{
+		AllRTTs.Add(Sample.RTT);
+	}
+	AllRTTs.Sort();
+	const int32 MedianIndex = AllRTTs.Num() / 2;
+	const double MedianRTT = AllRTTs.Num() % 2 == 0
+		? (AllRTTs[MedianIndex - 1] + AllRTTs[MedianIndex]) / 2.0
+		: AllRTTs[MedianIndex];
 
 	// Reject samples with RTT significantly higher than median
 	// Use a floor to prevent zero-trap where early samples with low RTT reject everything
 	const double MinThreshold = 0.01; // 10ms minimum threshold
-	double OutlierThreshold = FMath::Max(MedianRTT * OutlierRTTMultiplier, MinThreshold);
+	const double OutlierThreshold = FMath::Max(MedianRTT * OutlierRTTMultiplier, MinThreshold);
 
 	for (FSyncSample& Sample : SyncSamples)
 	{
-		if (Sample.RTT > OutlierThreshold)
-		{
-			Sample.bIsValid = false;
-		}
+		Sample.bIsValid = Sample.RTT <= OutlierThreshold;
 	}
 }
 
@@ -344,7 +396,13 @@ void USimpleTimeSynchronizerExtended::UpdateAdaptiveSyncInterval()
 
 double USimpleTimeSynchronizerExtended::GetLocalTime() const
 {
-	return GetWorld()->GetTimeSeconds();
+	const UWorld* World = GetWorld();
+	return World ? World->GetTimeSeconds() : 0.0;
+}
+
+bool USimpleTimeSynchronizerExtended::ContradictsCurrentEstimate(const FSyncSample& Sample) const
+{
+	return FMath::Abs(Sample.ClockOffset - CurrentClockOffset) > Sample.RTT * 0.5 + ClockStepTolerance;
 }
 
 

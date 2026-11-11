@@ -47,10 +47,6 @@ public:
 	UPROPERTY(VisibleAnywhere, Category = "AbilityComponent|State", meta = (TitleProperty = "AbilityClass"))
 	TArray<FAbilitySnapshot> LocalPendingAbilitySnapshots;
 
-	// Queue for snapshots that arrived before their ability was active (to resolve race condition)
-	UPROPERTY()
-	TArray<FAbilitySnapshot> DeferredSnapshots;
-
 	// Cooldown States (Server-authoritative)
 	UPROPERTY(VisibleAnywhere, Replicated, Category = "AbilityComponent|Cooldowns")
 	FCooldownStateContainer AuthorityCooldowns;
@@ -331,7 +327,12 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = "AbilityComponent|Cooldowns")
 	void StartAbilityCooldown(TSubclassOf<USimpleGameplayAbility> AbilityClass, float Duration);
 
-	int32 AddGameplayAbilitySnapshot(FGuid AbilityID, FInstancedStruct SnapshotData);
+	/**
+	 * Records a state snapshot of a running ability. SnapshotCounter is the ability's own per-activation counter, so the
+	 * client's and the server's n-th snapshot of one activation pair up. On the server the snapshot replicates; on a
+	 * client it waits for (or immediately meets) the server's and is then resolved through the ability.
+	 */
+	void AddGameplayAbilitySnapshot(FGuid AbilityID, int32 SnapshotCounter, FInstancedStruct SnapshotData);
 
 	/* Implementation of ISimpleAbilitySystemComponent interface */
 	
@@ -401,10 +402,10 @@ private:
 	UPROPERTY()
 	USimpleAttributeComponent* CachedAttributeComponent;
 	
-	/** Event IDs that were sent locally to prevent duplicate processing from multicasts (NOT replicated) */
-	TSet<FGuid> LocallySentEventIDs;
-
-	/** Timestamps of when EventIDs were added for periodic cleanup (NOT replicated) */
+	/**
+	 * Event IDs already processed here, with the world time they were first seen. Lets the sender ignore the server's
+	 * multicast echo of its own event; pruned periodically. (NOT replicated)
+	 */
 	TMap<FGuid, double> EventIDTimestamps;
 
 	/** Timer handle for periodic EventID cleanup */
@@ -430,15 +431,26 @@ private:
 	UFUNCTION()
 	void OnAbilityCancelled(USimpleAbilityBase* AbilityInstance, FGameplayTag CancelStatus, FInstancedStruct CancellationContext);
 
+	/**
+	 * Client: reconciles one authoritative ability state with what this machine predicted or already ran. Starts,
+	 * confirms, ends or cancels the local instance as needed and records the state in LocalAbilityStates.
+	 */
 	void ResolveLocalAbilityState(const FAbilityState& UpdatedAbilityState);
+	FAbilityState* FindLocalAbilityState(const FGuid& AbilityID);
+	/** Client: stores the server's version of a state, replacing the local prediction/copy if there is one. */
+	void UpsertLocalAbilityState(const FAbilityState& AuthorityState);
+	/** Client: processes container contents that replicated before BeginPlay bound the replication delegates. */
+	void ClientCatchUpInitialReplication();
+	/** Shared tail of OnAbilityEnded/OnAbilityCancelled: stamps the tracked state terminal and releases the instance. */
+	void RecordAbilityStopped(USimpleGameplayAbility& Ability, EAbilityStatus TerminalStatus, const FInstancedStruct& StopContext);
 	/** Authority: bump the revision of a tracked state and mark it for replication. */
 	void MarkAbilityStateDirty(FAbilityState& AbilityState);
 	/** Authority: track a refused activation so a predicting client always hears back about its AbilityID. */
 	void RecordRejectedActivation(const FGuid& AbilityID, const TSubclassOf<USimpleGameplayAbility>& AbilityClass,
 		const FInstancedStruct& AbilityContext, double ActivationTime, EAbilityNetworkRole ActivatedOn,
 		EAbilityActivationFailureReason Reason);
-	void ProcessDeferredSnapshots(FGuid AbilityID);
-	void TryResolveSnapshot(const FAbilitySnapshot& Snapshot);
+	/** Client: pairs the server's snapshot with the matching local one (if taken yet) and lets the ability resolve them. */
+	void TryResolveSnapshot(const FAbilitySnapshot& AuthoritySnapshot);
 	void CleanupOldAbilityStates();
 
 	// These functions are called on the client when the authoritative version of the variable changes on the server
@@ -446,7 +458,7 @@ private:
 	void ClientOnAbilityStateChanged(const FAbilityState& ChangedAbilityState);
 	void ClientOnAbilityStateRemoved(const FAbilityState& RemovedAbilityState);
 	void ClientOnAbilitySnapshotAdded(const FAbilitySnapshot& NewAbilitySnapshot);
-	void ClientOnAbilitySnapshotRemoved(const FAbilitySnapshot& NewAbilitySnapshot);
+	void ClientOnAbilitySnapshotRemoved(const FAbilitySnapshot& RemovedAbilitySnapshot);
 
 	// Cooldown management helpers
 	void StartAbilityCooldownInternal(TSubclassOf<USimpleGameplayAbility> AbilityClass, float Duration, bool bIsLocalPrediction);

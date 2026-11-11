@@ -15,6 +15,7 @@
 USimpleAttributeComponent::USimpleAttributeComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
+	SetIsReplicatedByDefault(true);
 }
 
 void USimpleAttributeComponent::BeginPlay()
@@ -23,14 +24,24 @@ void USimpleAttributeComponent::BeginPlay()
 
 	SetIsReplicated(true);
 
-	// Start periodic EventID cleanup timer (every 30 seconds)
 	if (UWorld* World = GetWorld())
 	{
+		// Start periodic EventID cleanup timer (every 30 seconds)
 		World->GetTimerManager().SetTimer(
 			EventIDCleanupTimerHandle,
 			this,
 			&USimpleAttributeComponent::CleanupOldEventIDs,
 			30.0f,
+			true
+		);
+
+		// Periodic cleanup of old modifier states (every 10 seconds). Needed on both sides: the server prunes the
+		// replicated states and mutations, a client prunes its predictions and local copies.
+		World->GetTimerManager().SetTimer(
+			CleanupTimerHandle,
+			this,
+			&USimpleAttributeComponent::CleanupOldModifierStates,
+			10.0f,
 			true
 		);
 	}
@@ -124,37 +135,29 @@ void USimpleAttributeComponent::BeginPlay()
 	{
 		LocalGameplayTags = AuthorityGameplayTags.Tags;
 	}
-
-	// Set up periodic cleanup of old modifier states (every 10 seconds)
-	if (GetWorld())
-	{
-		GetWorld()->GetTimerManager().SetTimer(
-			CleanupTimerHandle,
-			this,
-			&USimpleAttributeComponent::CleanupOldModifierStates,
-			10.0f,
-			true
-		);
-	}
 }
 
 void USimpleAttributeComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	// Clear cleanup timers
-	if (GetWorld())
+	if (UWorld* World = GetWorld())
 	{
-		if (CleanupTimerHandle.IsValid())
-		{
-			GetWorld()->GetTimerManager().ClearTimer(CleanupTimerHandle);
-		}
+		World->GetTimerManager().ClearTimer(CleanupTimerHandle);
+		World->GetTimerManager().ClearTimer(EventIDCleanupTimerHandle);
+	}
 
-		if (EventIDCleanupTimerHandle.IsValid())
+	// Modifiers still running are torn down quietly (timers, temporary tags, event subscription): running their
+	// end/cancel actions on a component that is going away would only touch dying state.
+	const TArray<USimpleAttributeModifier*> ModifiersToAbort = InstancedAttributeModifiers;
+	InstancedAttributeModifiers.Empty();
+	for (USimpleAttributeModifier* Modifier : ModifiersToAbort)
+	{
+		if (Modifier)
 		{
-			GetWorld()->GetTimerManager().ClearTimer(EventIDCleanupTimerHandle);
+			Modifier->AbortWithoutNotify();
 		}
 	}
 
-	InstancedAttributeModifiers.Empty();
 	Super::EndPlay(EndPlayReason);
 }
 
@@ -184,11 +187,12 @@ void USimpleAttributeComponent::AddGameplayTag(FGameplayTag Tag)
 	NewTagCounter.GameplayTag = Tag;
 	NewTagCounter.ReferenceCounter = 1;
 
-	TagCounters.AddUnique(NewTagCounter);
+	// Mark the array element, not the local copy, so the element itself carries its replication ID.
+	FGameplayTagCounter& AddedTagCounter = TagCounters.Add_GetRef(NewTagCounter);
 
 	if (HasAuthority())
 	{
-		AuthorityGameplayTags.MarkItemDirty(NewTagCounter);
+		AuthorityGameplayTags.MarkItemDirty(AddedTagCounter);
 	}
 
 	OnGameplayTagAdded.Broadcast(Tag);
@@ -309,7 +313,7 @@ void USimpleAttributeComponent::AddFloatAttribute(FFloatAttribute AttributeToAdd
         if (!OverrideValuesIfExists) return;
         if (Existing->Replication == AttributeToAdd.Replication)
         {
-            *Existing = AttributeToAdd;
+            AssignKeepingReplicationIdentity(*Existing, AttributeToAdd);
             MarkFloatAttributeDirty(*Existing);
             return;
         }
@@ -625,6 +629,15 @@ case EFloatAttributeValueType::CurrentValueRatio:
 			return 0.0f;
 		}
 		return NewValue;
+
+	// The limits themselves are not limited. (They used to fall into the default case and come back as zero, so
+	// setting a min/max through SetFloatAttributeValue silently zeroed it.)
+	case EFloatAttributeValueType::MaxCurrentValue:
+	case EFloatAttributeValueType::MinCurrentValue:
+	case EFloatAttributeValueType::MaxBaseValue:
+	case EFloatAttributeValueType::MinBaseValue:
+		return NewValue;
+
 default:
 		SIMPLE_LOG(this, TEXT("[USimpleGameplayAbilityComponent::ClampFloatAttributeValue]: ValueType not supported."));
 		return 0.0f;
@@ -793,8 +806,9 @@ void USimpleAttributeComponent::AddStructAttribute(FStructAttribute AttributeToA
 			AttributeToAdd.AttributeValue.InitializeAs(AttributeToAdd.StructType);
 		}
 
-		AuthorityStructAttributes.Attributes.AddUnique(AttributeToAdd);
-		AuthorityStructAttributes.MarkItemDirty(AttributeToAdd);
+		// Mark the array element, not the local copy, so the element itself carries its replication ID.
+		FStructAttribute& AddedAttribute = AuthorityStructAttributes.Attributes.Add_GetRef(AttributeToAdd);
+		AuthorityStructAttributes.MarkItemDirty(AddedAttribute);
 		OnStructAttributeAdded.Broadcast(AttributeToAdd.AttributeTag, AttributeToAdd);
 
 		return;
@@ -807,7 +821,7 @@ void USimpleAttributeComponent::AddStructAttribute(FStructAttribute AttributeToA
 	}
 
 	// Attribute exists and we want to override it
-	AuthorityStructAttributes.Attributes[AttributeIndex] = AttributeToAdd;
+	AssignKeepingReplicationIdentity(AuthorityStructAttributes.Attributes[AttributeIndex], AttributeToAdd);
 	AuthorityStructAttributes.MarkItemDirty(AuthorityStructAttributes.Attributes[AttributeIndex]);
 	OnStructAttributeAdded.Broadcast(AttributeToAdd.AttributeTag, AttributeToAdd);
 }
@@ -930,16 +944,7 @@ bool USimpleAttributeComponent::ApplyAttributeModifierToTarget(
 		ModifierContext,
 		false);
 
-	// Initialize stack count for consolidated stacking
-	if (Modifier->StackingConfig.bEnableStacking)
-	{
-		Modifier->CurrentStackCount = 1;
-		Modifier->RecalculateMagnitude();
-		Modifier->InjectStackCountToScratchpad();
-
-	}
-
-	return Modifier->ApplyModifier();
+	return ApplyModifierInstance(Modifier, 1);
 }
 
 bool USimpleAttributeComponent::ApplyAttributeModifierToTargetPredicted(
@@ -1006,15 +1011,7 @@ bool USimpleAttributeComponent::ApplyAttributeModifierToTargetPredicted(
 		ModifierContext,
 		true);
 
-	// Initialize stack count for consolidated stacking
-	if (Modifier->StackingConfig.bEnableStacking)
-	{
-		Modifier->CurrentStackCount = 1;
-		Modifier->RecalculateMagnitude();
-		Modifier->InjectStackCountToScratchpad();
-	}
-
-	const bool WasApplied = Modifier->ApplyModifier();
+	const bool WasApplied = ApplyModifierInstance(Modifier, 1);
 
 	if (!HasAuthority())
 	{
@@ -1080,15 +1077,7 @@ void USimpleAttributeComponent::ServerApplyAttributeModifierToTarget_Implementat
 		ModifierContext,
 		true);
 
-	// Initialize stack count for consolidated stacking
-	if (Modifier->StackingConfig.bEnableStacking)
-	{
-		Modifier->CurrentStackCount = 1;
-		Modifier->RecalculateMagnitude();
-		Modifier->InjectStackCountToScratchpad();
-	}
-
-	Modifier->ApplyModifier();
+	ApplyModifierInstance(Modifier, 1);
 }
 
 bool USimpleAttributeComponent::ApplyAttributeModifierToSelf(
@@ -1155,9 +1144,11 @@ void USimpleAttributeComponent::ServerCancelAttributeModifier_Implementation(con
 
 void USimpleAttributeComponent::CancelAttributeModifiersWithTags(const FGameplayTagContainer ModifierTags)
 {
-	for (USimpleAttributeModifier* Modifier : InstancedAttributeModifiers)
+	// Iterate a copy: a cancelled modifier is released from the array, and its actions may apply new modifiers.
+	const TArray<USimpleAttributeModifier*> Candidates = InstancedAttributeModifiers;
+	for (USimpleAttributeModifier* Modifier : Candidates)
 	{
-		if (Modifier && Modifier->ModifierTags.HasAny(ModifierTags))
+		if (Modifier && Modifier->IsActive && Modifier->ModifierTags.HasAny(ModifierTags))
 		{
 			Modifier->CancelModifier(FDefaultTags::AttributeModifierCancelled(), FInstancedStruct());
 		}
@@ -1192,7 +1183,9 @@ void USimpleAttributeComponent::ServerCancelAttributeModifiersWithTags_Implement
 
 void USimpleAttributeComponent::CancelAttributeModifiersWithClass(TSubclassOf<USimpleAttributeModifier> ModifierClass)
 {
-	for (USimpleAttributeModifier* Modifier : InstancedAttributeModifiers)
+	// Iterate a copy: a cancelled modifier is released from the array, and its actions may apply new modifiers.
+	const TArray<USimpleAttributeModifier*> Candidates = InstancedAttributeModifiers;
+	for (USimpleAttributeModifier* Modifier : Candidates)
 	{
 		if (Modifier && Modifier->IsActive && Modifier->IsA(ModifierClass))
 		{
@@ -1240,6 +1233,18 @@ bool USimpleAttributeComponent::IsModifierWithTagsActive(const FGameplayTagConta
 	return false;
 }
 
+USimpleAttributeModifier* USimpleAttributeComponent::FindModifierInstance(const FGuid& ModifierID) const
+{
+	for (USimpleAttributeModifier* Modifier : InstancedAttributeModifiers)
+	{
+		if (Modifier && Modifier->ModifierID == ModifierID)
+		{
+			return Modifier;
+		}
+	}
+	return nullptr;
+}
+
 USimpleAttributeModifier* USimpleAttributeComponent::GetAttributeModifierInstance(const TSubclassOf<USimpleAttributeModifier>& ModifierClass, const FGuid NewModifierID, USimpleAttributeComponent* Instigator, USimpleAttributeComponent* Target, const float Magnitude, const FInstancedStruct Context, const bool DoesReplicate)
 {
 	if (!ModifierClass)
@@ -1249,17 +1254,14 @@ USimpleAttributeModifier* USimpleAttributeComponent::GetAttributeModifierInstanc
 	}
 
 	// Check if an instance with this ModifierID already exists (e.g., from client prediction)
-	for (USimpleAttributeModifier* ExistingModifier : InstancedAttributeModifiers)
+	if (USimpleAttributeModifier* ExistingModifier = FindModifierInstance(NewModifierID))
 	{
-		if (ExistingModifier && ExistingModifier->ModifierID == NewModifierID)
+		// Don't reinitialize if already active to preserve state like ActivationTime
+		if (!ExistingModifier->IsActive)
 		{
-			// Don't reinitialize if already active to preserve state like ActivationTime
-			if (!ExistingModifier->IsActive)
-			{
-				ExistingModifier->InitializeModifier(NewModifierID, Instigator, Target, Magnitude, Context, DoesReplicate);
-			}
-			return ExistingModifier;
+			ExistingModifier->InitializeModifier(NewModifierID, Instigator, Target, Magnitude, Context, DoesReplicate);
 		}
+		return ExistingModifier;
 	}
 
 	// No existing instance found, create new one
@@ -1274,24 +1276,65 @@ USimpleAttributeModifier* USimpleAttributeComponent::GetAttributeModifierInstanc
 	return ModifierInstance;
 }
 
+bool USimpleAttributeComponent::ApplyModifierInstance(USimpleAttributeModifier* Modifier, const int32 InitialStackCount)
+{
+	if (!Modifier)
+	{
+		return false;
+	}
+
+	// Initialize stack count for consolidated stacking
+	if (InitialStackCount > 0 && Modifier->StackingConfig.bEnableStacking)
+	{
+		Modifier->CurrentStackCount = InitialStackCount;
+		Modifier->RecalculateMagnitude();
+		Modifier->InjectStackCountToScratchpad();
+	}
+
+	const bool bWasApplied = Modifier->ApplyModifier();
+
+	// Refused, or instant and therefore already over: nothing keeps the instance alive past this point.
+	if (!Modifier->IsActive)
+	{
+		ReleaseModifierInstance(Modifier);
+	}
+
+	return bWasApplied;
+}
+
+void USimpleAttributeComponent::ReleaseModifierInstance(USimpleAttributeModifier* Modifier)
+{
+	// Idempotent: the stop callbacks and ApplyModifierInstance may both get here for the same instance.
+	if (Modifier && InstancedAttributeModifiers.Remove(Modifier) > 0)
+	{
+		Modifier->OnCleanupModifier();
+	}
+}
+
 /* Attribute Modifier State Callbacks */
 
-void USimpleAttributeComponent::OnAttributeModifierInitiallyApplied(USimpleAttributeModifier* ModifierInstance)
+FAttributeModifierState USimpleAttributeComponent::MakeModifierState(const USimpleAttributeModifier& ModifierInstance, const EModifierStatus Status)
 {
 	FAttributeModifierState NewState;
-	NewState.ModifierID = ModifierInstance->ModifierID;
-	NewState.ModifierContext = ModifierInstance->ModifierContext;
-	NewState.ModifierMagnitude = ModifierInstance->ModifierMagnitude;
-	NewState.InstigatorAttributeComponent = ModifierInstance->InstigatorAttributeComponent;
-	NewState.TargetAttributeComponent = ModifierInstance->TargetAttributeComponent;
-	NewState.ModifierClass = ModifierInstance->GetClass();
-	NewState.ModifierStatus = EModifierStatus::Applied;
+	NewState.ModifierID = ModifierInstance.ModifierID;
+	NewState.ModifierContext = ModifierInstance.ModifierContext;
+	NewState.ModifierMagnitude = ModifierInstance.ModifierMagnitude;
+	NewState.InstigatorAttributeComponent = ModifierInstance.InstigatorAttributeComponent;
+	NewState.TargetAttributeComponent = ModifierInstance.TargetAttributeComponent;
+	NewState.ModifierClass = ModifierInstance.GetClass();
+	NewState.ModifierStatus = Status;
 	NewState.ApplicationTimestamp = GetServerTime();
 
 	// Include stacking state
-	NewState.StackCount = ModifierInstance->CurrentStackCount > 0 ? ModifierInstance->CurrentStackCount : 1;
-	NewState.ScaledMagnitude = ModifierInstance->ScaledMagnitude;
-	NewState.StackDurations = ModifierInstance->StackDurations;
+	NewState.StackCount = ModifierInstance.CurrentStackCount > 0 ? ModifierInstance.CurrentStackCount : 1;
+	NewState.ScaledMagnitude = ModifierInstance.ScaledMagnitude;
+	NewState.StackDurations = ModifierInstance.StackDurations;
+	return NewState;
+}
+
+void USimpleAttributeComponent::OnAttributeModifierInitiallyApplied(USimpleAttributeModifier* ModifierInstance)
+{
+	const FAttributeModifierState NewState = MakeModifierState(*ModifierInstance, EModifierStatus::Applied);
 
 	if (!HasAuthority())
 	{
@@ -1299,82 +1342,56 @@ void USimpleAttributeComponent::OnAttributeModifierInitiallyApplied(USimpleAttri
 		return;
 	}
 
-	AuthorityAttributeModifierStates.ModifierStates.Add(NewState);
-	AuthorityAttributeModifierStates.MarkItemDirty(NewState);
+	// Mark the array element, not the local copy, so the element itself carries its replication ID.
+	FAttributeModifierState& AddedState = AuthorityAttributeModifierStates.ModifierStates.Add_GetRef(NewState);
+	AuthorityAttributeModifierStates.MarkItemDirty(AddedState);
 }
 
 void USimpleAttributeComponent::OnAttributeModifierEnded(USimpleAttributeModifier* ModifierInstance, FGameplayTag EndStatus, FInstancedStruct EndContext)
 {
-	if (HasAuthority())
-	{
-		for (FAttributeModifierState& State : AuthorityAttributeModifierStates.ModifierStates)
-		{
-			if (State.ModifierID == ModifierInstance->ModifierID)
-			{
-				State.ModifierStatus = EModifierStatus::Ended;
-				State.EndedTimestamp = GetServerTime();
-				AuthorityAttributeModifierStates.MarkItemDirty(State);
-				ModifierInstance->OnCleanupModifier();
-				InstancedAttributeModifiers.Remove(ModifierInstance);
-				return;
-			}
-		}
-	}
-	else
-	{
-		for (FAttributeModifierState& State : LocalAttributeModifierStates)
-		{
-			if (State.ModifierID == ModifierInstance->ModifierID)
-			{
-				State.ModifierStatus = EModifierStatus::Ended;
-				State.EndedTimestamp = GetServerTime();
-				ModifierInstance->OnCleanupModifier();
-				InstancedAttributeModifiers.Remove(ModifierInstance);
-				return;
-			}
-		}
-	}
-
-	SIMPLE_LOG(this, FString::Printf(
-		TEXT("[USimpleAttributeComponent::OnAttributeModifierEnded]: Modifier with ID %s not found in ModifierStates array"),
-		*ModifierInstance->ModifierID.ToString()));
+	RecordModifierStopped(ModifierInstance, EModifierStatus::Ended);
 }
 
 void USimpleAttributeComponent::OnAttributeModifierCancelled(USimpleAttributeModifier* ModifierInstance, FGameplayTag EndStatus, FInstancedStruct EndContext)
 {
-	if (HasAuthority())
+	RecordModifierStopped(ModifierInstance, EModifierStatus::Cancelled);
+}
+
+void USimpleAttributeComponent::RecordModifierStopped(USimpleAttributeModifier* ModifierInstance, const EModifierStatus TerminalStatus)
+{
+	if (!ModifierInstance)
 	{
-		for (FAttributeModifierState& State : AuthorityAttributeModifierStates.ModifierStates)
-		{
-			if (State.ModifierID == ModifierInstance->ModifierID)
-			{
-				State.ModifierStatus = EModifierStatus::Cancelled;
-				State.EndedTimestamp = GetServerTime();
-				AuthorityAttributeModifierStates.MarkItemDirty(State);
-				ModifierInstance->OnCleanupModifier();
-				InstancedAttributeModifiers.Remove(ModifierInstance);
-				return;
-			}
-		}
+		return;
 	}
-	else
+
+	// Only replicating modifiers are tracked in the state arrays.
+	if (ModifierInstance->DoesReplicate())
 	{
-		for (FAttributeModifierState& State : LocalAttributeModifierStates)
+		const bool bIsAuthority = HasAuthority();
+		const FGuid ModifierID = ModifierInstance->ModifierID;
+		TArray<FAttributeModifierState>& ModifierStates = bIsAuthority ? AuthorityAttributeModifierStates.ModifierStates : LocalAttributeModifierStates;
+		FAttributeModifierState* State = ModifierStates.FindByPredicate([&ModifierID](const FAttributeModifierState& Candidate) { return Candidate.ModifierID == ModifierID; });
+
+		// The server refused the application before it ever became a state. A client that predicted this modifier
+		// only rolls its prediction back when it sees a Cancelled state for the ID, so record one.
+		if (!State && bIsAuthority && TerminalStatus == EModifierStatus::Cancelled)
 		{
-			if (State.ModifierID == ModifierInstance->ModifierID)
+			State = &ModifierStates.Add_GetRef(MakeModifierState(*ModifierInstance, EModifierStatus::Cancelled));
+		}
+
+		if (State)
+		{
+			State->ModifierStatus = TerminalStatus;
+			State->EndedTimestamp = GetServerTime();
+			if (bIsAuthority)
 			{
-				State.ModifierStatus = EModifierStatus::Cancelled;
-				State.EndedTimestamp = GetServerTime();
-				ModifierInstance->OnCleanupModifier();
-				InstancedAttributeModifiers.Remove(ModifierInstance);
-				return;
+				AuthorityAttributeModifierStates.MarkItemDirty(*State);
 			}
 		}
 	}
 
-	SIMPLE_LOG(this, FString::Printf(
-		TEXT("[USimpleAttributeComponent::OnAttributeModifierCancelled]: Modifier with ID %s not found in ModifierStates array"),
-		*ModifierInstance->ModifierID.ToString()));
+	// Stopped for good, tracked or not: unsubscribe it from the event subsystem and let it be collected.
+	ReleaseModifierInstance(ModifierInstance);
 }
 
 // Modifier Mutation Addition
@@ -1438,12 +1455,20 @@ USimpleTimeSynchronizer* USimpleAttributeComponent::GetTimeSynchronizerComponent
 
 double USimpleAttributeComponent::GetServerTime()
 {
-	if (GetTimeSynchronizerComponent())
+	if (USimpleTimeSynchronizer* TimeSynchronizer = GetTimeSynchronizerComponent())
 	{
-		return GetTimeSynchronizerComponent()->GetServerTime();
+		return TimeSynchronizer->GetServerTime();
 	}
 
-	return GetWorld()->GetGameState()->GetServerWorldTimeSeconds();
+	const UWorld* World = GetWorld();
+	if (!World)
+	{
+		return 0.0;
+	}
+
+	// A client has no GameState until it replicates; its own clock is the best estimate until then.
+	const AGameStateBase* GameState = World->GetGameState();
+	return GameState ? GameState->GetServerWorldTimeSeconds() : World->GetTimeSeconds();
 }
 
 USimpleAttributeHandler* USimpleAttributeComponent::GetStructAttributeHandler(const FGameplayTag AttributeTag, const TSubclassOf<USimpleAttributeHandler> AttributeHandlerClass, EGetInstancedStructResult& OutResult)
@@ -1529,98 +1554,7 @@ USimpleAttributeHandler* USimpleAttributeComponent::GetStructAttributeHandlerIns
 
 void USimpleAttributeComponent::ClientOnAttributeModiferStateAdded(const FAttributeModifierState& NewAttributeModiferState)
 {
-	// A mapping of the local modifier states for quick lookups
-	TMap<FGuid, int32> LocalAttributeModifierArrayIndexMap;
-
-	for (int32 i = 0; i < LocalAttributeModifierStates.Num(); i++)
-	{
-		LocalAttributeModifierArrayIndexMap.Add(LocalAttributeModifierStates[i].ModifierID, i);
-	}
-
-	USimpleAttributeModifier* Modifier = GetAttributeModifierInstance(
-						NewAttributeModiferState.ModifierClass,
-						NewAttributeModiferState.ModifierID,
-						NewAttributeModiferState.InstigatorAttributeComponent,
-						NewAttributeModiferState.TargetAttributeComponent,
-						NewAttributeModiferState.ModifierMagnitude,
-						NewAttributeModiferState.ModifierContext,
-						true);
-	
-	// Check if we already have this state to prevent double application
-	if (LocalAttributeModifierArrayIndexMap.Contains(NewAttributeModiferState.ModifierID))
-	{
-		// State already exists, this should be handled by ClientOnAttributeModifierStateChanged
-		return;
-	}
-
-	USimpleAttributeComponent* TargetComponent = NewAttributeModiferState.TargetAttributeComponent;
-
-	switch (NewAttributeModiferState.ModifierStatus)
-	{
-		case EModifierStatus::Applied:
-			// Only apply if not already active (could be client predicted)
-			if (!Modifier->IsActive)
-			{
-				Modifier->ApplyModifier();
-			}
-			else
-			{
-				// Server confirmed our prediction, remove the snapshot
-				if (TargetComponent)
-				{
-					TargetComponent->PredictedModifierSnapshots.RemoveAll([NewAttributeModiferState](const FPredictedModifierSnapshot& Snapshot)
-					{
-						return Snapshot.ModifierID == NewAttributeModiferState.ModifierID;
-					});
-				}
-			}
-			LocalAttributeModifierStates.Add(NewAttributeModiferState);
-			break;
-
-		case EModifierStatus::Cancelled:
-			// Server rejected the modifier, rollback using snapshot
-			if (TargetComponent)
-			{
-				const FPredictedModifierSnapshot* Snapshot = TargetComponent->PredictedModifierSnapshots.FindByPredicate(
-					[NewAttributeModiferState](const FPredictedModifierSnapshot& S)
-					{
-						return S.ModifierID == NewAttributeModiferState.ModifierID;
-					});
-
-				if (Snapshot)
-				{
-					TargetComponent->RestoreAttributeSnapshot(Snapshot->AttributeSnapshot);
-					TargetComponent->PredictedModifierSnapshots.RemoveAll([NewAttributeModiferState](const FPredictedModifierSnapshot& S)
-					{
-						return S.ModifierID == NewAttributeModiferState.ModifierID;
-					});
-				}
-			}
-
-			if (Modifier->IsActive)
-			{
-				Modifier->CancelModifier(FDefaultTags::AttributeModifierCancelled(), FInstancedStruct());
-			}
-			LocalAttributeModifierStates.Add(NewAttributeModiferState);
-			break;
-
-		case EModifierStatus::Ended:
-			if (Modifier->IsActive)
-			{
-				Modifier->EndModifier(FDefaultTags::AttributeModifierEnded(), FInstancedStruct());
-			}
-
-			// Remove snapshot if any
-			if (TargetComponent)
-			{
-				TargetComponent->PredictedModifierSnapshots.RemoveAll([NewAttributeModiferState](const FPredictedModifierSnapshot& Snapshot)
-				{
-					return Snapshot.ModifierID == NewAttributeModiferState.ModifierID;
-				});
-			}
-			LocalAttributeModifierStates.Add(NewAttributeModiferState);
-			break;
-	}
+	ClientResolveModifierState(NewAttributeModiferState);
 
 	// Process any pending mutations for this modifier
 	ProcessPendingMutations(NewAttributeModiferState.ModifierID);
@@ -1628,62 +1562,103 @@ void USimpleAttributeComponent::ClientOnAttributeModiferStateAdded(const FAttrib
 
 void USimpleAttributeComponent::ClientOnAttributeModifierStateChanged(const FAttributeModifierState& ChangedAttributeModiferState)
 {
-	// A mapping of the local modifier states for quick lookups
-	TMap<FGuid, int32> LocalAttributeModifierArrayIndexMap;
+	ClientResolveModifierState(ChangedAttributeModiferState);
+}
 
-	for (int32 i = 0; i < LocalAttributeModifierStates.Num(); i++)
+void USimpleAttributeComponent::ClientResolveModifierState(const FAttributeModifierState& AuthorityState)
+{
+	const FGuid ModifierID = AuthorityState.ModifierID;
+	const auto MatchesID = [&ModifierID](const FAttributeModifierState& State) { return State.ModifierID == ModifierID; };
+
+	// A local state means this modifier has already run here (predicted, or started by an earlier update).
+	const bool bHadLocalState = LocalAttributeModifierStates.ContainsByPredicate(MatchesID);
+
+	// Only an instance that already exists is ever ended or cancelled. Creating one just to stop it would run its
+	// end/cancel actions and take back temporary tags for a modifier that never ran here.
+	USimpleAttributeModifier* ActiveModifier = FindModifierInstance(ModifierID);
+	if (ActiveModifier && !ActiveModifier->IsActive)
 	{
-		LocalAttributeModifierArrayIndexMap.Add(LocalAttributeModifierStates[i].ModifierID, i);
+		ActiveModifier = nullptr;
 	}
 
-	USimpleAttributeModifier* Modifier = GetAttributeModifierInstance(
-						ChangedAttributeModiferState.ModifierClass,
-						ChangedAttributeModiferState.ModifierID,
-						ChangedAttributeModiferState.InstigatorAttributeComponent,
-						ChangedAttributeModiferState.TargetAttributeComponent,
-						ChangedAttributeModiferState.ModifierMagnitude,
-						ChangedAttributeModiferState.ModifierContext,
-						true);
-	
-	switch (ChangedAttributeModiferState.ModifierStatus)
+	USimpleAttributeComponent* TargetComponent = AuthorityState.TargetAttributeComponent;
+	const auto DropPredictionSnapshot = [TargetComponent, &ModifierID]
+	{
+		if (TargetComponent)
+		{
+			TargetComponent->PredictedModifierSnapshots.RemoveAll([&ModifierID](const FPredictedModifierSnapshot& Snapshot) { return Snapshot.ModifierID == ModifierID; });
+		}
+	};
+
+	switch (AuthorityState.ModifierStatus)
 	{
 		case EModifierStatus::Applied:
-			if (!LocalAttributeModifierArrayIndexMap.Contains(ChangedAttributeModiferState.ModifierID))
+			if (ActiveModifier)
 			{
-				// Only apply if not already active (could be client predicted)
-				if (!Modifier->IsActive)
-				{
-					Modifier->ApplyModifier();
-				}
-
-				LocalAttributeModifierStates.Add(ChangedAttributeModiferState);
-				return;
+				// Running here already: the server confirmed our prediction (or revised a modifier we mirror).
+				DropPredictionSnapshot();
 			}
-
-			LocalAttributeModifierStates[LocalAttributeModifierArrayIndexMap[ChangedAttributeModiferState.ModifierID]] = ChangedAttributeModiferState;
+			else if (!bHadLocalState)
+			{
+				// New to this client: run it here too.
+				USimpleAttributeModifier* Modifier = GetAttributeModifierInstance(
+					AuthorityState.ModifierClass,
+					ModifierID,
+					AuthorityState.InstigatorAttributeComponent,
+					AuthorityState.TargetAttributeComponent,
+					AuthorityState.ModifierMagnitude,
+					AuthorityState.ModifierContext,
+					true);
+				ApplyModifierInstance(Modifier, 0);
+			}
+			// Otherwise it already ran and stopped here; it is never started a second time.
 			break;
-			
+
 		case EModifierStatus::Cancelled:
-			if (LocalAttributeModifierArrayIndexMap.Contains(ChangedAttributeModiferState.ModifierID))
+			// The server rejected or cancelled the modifier: roll a prediction back to its snapshot.
+			if (TargetComponent)
 			{
-				Modifier->CancelModifier(FDefaultTags::AttributeModifierCancelled(),FInstancedStruct());
+				const FPredictedModifierSnapshot* Snapshot = TargetComponent->PredictedModifierSnapshots.FindByPredicate(
+					[&ModifierID](const FPredictedModifierSnapshot& Candidate) { return Candidate.ModifierID == ModifierID; });
+				if (Snapshot)
+				{
+					const FAttributeSnapshot AttributeSnapshot = Snapshot->AttributeSnapshot;
+					DropPredictionSnapshot();
+					TargetComponent->RestoreAttributeSnapshot(AttributeSnapshot);
+				}
 			}
-			break;	
+			if (ActiveModifier)
+			{
+				ActiveModifier->CancelModifier(FDefaultTags::AttributeModifierCancelled(), FInstancedStruct());
+			}
+			break;
 
 		case EModifierStatus::Ended:
-			if (LocalAttributeModifierArrayIndexMap.Contains(ChangedAttributeModiferState.ModifierID))
+			if (ActiveModifier)
 			{
-				Modifier->EndModifier(FDefaultTags::AttributeModifierEnded(),FInstancedStruct());
+				ActiveModifier->EndModifier(FDefaultTags::AttributeModifierEnded(), FInstancedStruct());
 			}
+			DropPredictionSnapshot();
 			break;
+	}
+
+	// The calls above run game code that can add local states, so look the entry up again. The server's state wins.
+	if (FAttributeModifierState* LocalState = LocalAttributeModifierStates.FindByPredicate(MatchesID))
+	{
+		*LocalState = AuthorityState;
+	}
+	else
+	{
+		LocalAttributeModifierStates.Add(AuthorityState);
 	}
 }
 
 void USimpleAttributeComponent::ClientOnAttributeModiferStateRemoved(const FAttributeModifierState& RemovedAttributeModiferState)
 {
-	LocalAttributeModifierStates.RemoveAll([RemovedAttributeModiferState](const FAttributeModifierState& ModifierState)
+	const FGuid ModifierID = RemovedAttributeModiferState.ModifierID;
+	LocalAttributeModifierStates.RemoveAll([&ModifierID](const FAttributeModifierState& ModifierState)
 	{
-		return ModifierState.ModifierID == RemovedAttributeModiferState.ModifierID;
+		return ModifierState.ModifierID == ModifierID;
 	});
 }
 
@@ -1697,24 +1672,24 @@ void USimpleAttributeComponent::ClientOnAttributeModifierMutationAdded(const FAt
 		return;
 	}
 
-	// Get the local version of NewAttributeModifierSnapshot if it exists
-	const FAttributeModifierMutation* PredictedMutation = LocalAttributeModiferMutations.FindByPredicate(
-		[NewModifierMutation](const FAttributeModifierMutation& Mutation)
-		{
-			return Mutation.ModifierID == NewModifierMutation.ModifierID;
-		});
-
-	FModifierActionStackResults LocalActionStackResults;
-
-	if (PredictedMutation)
+	// The local prediction this mutation answers. Both sides produce a modifier's mutations in the same order, so the
+	// oldest unresolved local one is the counterpart (the counters themselves drift as resolved entries are removed).
+	const FGuid ModifierID = NewModifierMutation.ModifierID;
+	int32 PredictedIndex = INDEX_NONE;
+	for (int32 Index = 0; Index < LocalAttributeModiferMutations.Num(); ++Index)
 	{
-		LocalActionStackResults = PredictedMutation->ActionStackResult;
-	}
-	
-	const FAttributeModifierState* AuthorityState = AuthorityAttributeModifierStates.ModifierStates.FindByPredicate(
-		[NewModifierMutation](const FAttributeModifierState& State)
+		const FAttributeModifierMutation& Candidate = LocalAttributeModiferMutations[Index];
+		if (Candidate.ModifierID == ModifierID
+			&& (PredictedIndex == INDEX_NONE || Candidate.MutationCounter < LocalAttributeModiferMutations[PredictedIndex].MutationCounter))
 		{
-			return State.ModifierID == NewModifierMutation.ModifierID;
+			PredictedIndex = Index;
+		}
+	}
+
+	const FAttributeModifierState* AuthorityState = AuthorityAttributeModifierStates.ModifierStates.FindByPredicate(
+		[&ModifierID](const FAttributeModifierState& State)
+		{
+			return State.ModifierID == ModifierID;
 		});
 
 	if (!AuthorityState)
@@ -1728,6 +1703,15 @@ void USimpleAttributeComponent::ClientOnAttributeModifierMutationAdded(const FAt
 		return;
 	}
 
+	// Take the prediction out before resolving: resolving runs actions, which is game code.
+	FModifierActionStackResults LocalActionStackResults;
+	if (PredictedIndex != INDEX_NONE)
+	{
+		LocalActionStackResults = LocalAttributeModiferMutations[PredictedIndex].ActionStackResult;
+		LocalAttributeModiferMutations.RemoveAt(PredictedIndex);
+	}
+
+	const bool bHadInstance = FindModifierInstance(ModifierID) != nullptr;
 	USimpleAttributeModifier* Modifier = GetAttributeModifierInstance(
 		AuthorityState->ModifierClass,
 		AuthorityState->ModifierID,
@@ -1736,17 +1720,17 @@ void USimpleAttributeComponent::ClientOnAttributeModifierMutationAdded(const FAt
 		AuthorityState->ModifierMagnitude,
 		AuthorityState->ModifierContext,
 		true);
+	if (!Modifier)
+	{
+		return;
+	}
 
 	Modifier->OnClientReceivedServerActionsResult(NewModifierMutation.ActionStackResult, LocalActionStackResults);
 
-	
-	// Remove the local snapshot from the pending snapshots array now that we've resolved the differences
-	if (PredictedMutation)
+	// An instance created only to resolve this mutation (the modifier isn't running here) is not kept.
+	if (!bHadInstance && !Modifier->IsActive)
 	{
-		LocalAttributeModiferMutations.RemoveAll([PredictedMutation](const FAttributeModifierMutation& Snapshot)
-		{
-			return Snapshot.ModifierID == PredictedMutation->ModifierID && Snapshot.MutationCounter == PredictedMutation->MutationCounter;
-		});
+		ReleaseModifierInstance(Modifier);
 	}
 }
 
@@ -1766,6 +1750,14 @@ void USimpleAttributeComponent::ClientOnFloatAttributeChanged(const FFloatAttrib
 		OnFloatAttributeAdded.Broadcast(ChangedFloatAttribute.AttributeTag, ChangedFloatAttribute);
 		return;
 	}
+
+	// Fields without a change event are mirrored as they are. The regeneration parameters matter most: a client
+	// computes the effective current value from them, so stale ones make it regenerate from the wrong instant.
+	LocalFloatAttribute->AttributeName = ChangedFloatAttribute.AttributeName;
+	LocalFloatAttribute->Replication = ChangedFloatAttribute.Replication;
+	LocalFloatAttribute->CurrentRegenRate = ChangedFloatAttribute.CurrentRegenRate;
+	LocalFloatAttribute->bIsRegenerating = ChangedFloatAttribute.bIsRegenerating;
+	LocalFloatAttribute->LastRegenParamsUpdateTime_Server = ChangedFloatAttribute.LastRegenParamsUpdateTime_Server;
 
 	float OldFloatValue;
 	bool OldBoolValue;
@@ -1926,8 +1918,12 @@ void USimpleAttributeComponent::ClientOnGameplayTagAdded(const FGameplayTagCount
 
 void USimpleAttributeComponent::ClientOnGameplayTagRemoved(const FGameplayTagCounter& RemovedGameplayTag)
 {
-	LocalGameplayTags.Remove(RemovedGameplayTag);
-	OnGameplayTagRemoved.Broadcast(RemovedGameplayTag.GameplayTag);
+	// The server's removal wins over any local reference count. Only announce a tag that was actually still held
+	// here (a local prediction may already have removed and announced it).
+	if (LocalGameplayTags.Remove(RemovedGameplayTag) > 0)
+	{
+		OnGameplayTagRemoved.Broadcast(RemovedGameplayTag.GameplayTag);
+	}
 }
 
 /* Stack Group Query Functions */
@@ -2132,20 +2128,8 @@ bool USimpleAttributeComponent::AddStacksToModifier(
 		true // replicate
 	);
 
-	if (!NewModifier)
-	{
-		return false;
-	}
-
-	// Set initial stack count and calculate magnitude
-	NewModifier->CurrentStackCount = StacksToAdd;
-	NewModifier->RecalculateMagnitude();
-
-	// Always inject stack count to scratchpad for stacking modifiers
-	NewModifier->InjectStackCountToScratchpad();
-
-	// Apply the modifier
-	return NewModifier->ApplyModifier();
+	// Apply the modifier with its initial stack count
+	return ApplyModifierInstance(NewModifier, StacksToAdd);
 }
 
 bool USimpleAttributeComponent::RemoveStacksFromModifier(FGameplayTag StackGroupTag, int32 StacksToRemove)
@@ -2304,29 +2288,25 @@ void USimpleAttributeComponent::CleanupOldModifierStates()
 	// Clean up old authority states (server only)
 	if (HasAuthority())
 	{
-		for (int32 i = AuthorityAttributeModifierStates.ModifierStates.Num() - 1; i >= 0; i--)
+		// Remove ended/cancelled states that are older than retention time
+		const int32 RemovedStates = AuthorityAttributeModifierStates.ModifierStates.RemoveAll([CurrentTime](const FAttributeModifierState& State)
 		{
-			const FAttributeModifierState& State = AuthorityAttributeModifierStates.ModifierStates[i];
-
-			// Remove ended/cancelled states that are older than retention time
-			if ((State.ModifierStatus == EModifierStatus::Ended || State.ModifierStatus == EModifierStatus::Cancelled) &&
-				(CurrentTime - State.EndedTimestamp) > MaxStateRetentionTime)
-			{
-				AuthorityAttributeModifierStates.ModifierStates.RemoveAt(i);
-				AuthorityAttributeModifierStates.MarkArrayDirty();
-			}
+			return (State.ModifierStatus == EModifierStatus::Ended || State.ModifierStatus == EModifierStatus::Cancelled)
+				&& (CurrentTime - State.EndedTimestamp) > MaxStateRetentionTime;
+		});
+		if (RemovedStates > 0)
+		{
+			AuthorityAttributeModifierStates.MarkArrayDirty();
 		}
 
 		// Clean up old mutations
-		for (int32 i = AuthorityAttributeModifierMutations.Mutations.Num() - 1; i >= 0; i--)
+		const int32 RemovedMutations = AuthorityAttributeModifierMutations.Mutations.RemoveAll([CurrentTime](const FAttributeModifierMutation& Mutation)
 		{
-			const FAttributeModifierMutation& Mutation = AuthorityAttributeModifierMutations.Mutations[i];
-
-			if ((CurrentTime - Mutation.MutationTimestamp) > MaxStateRetentionTime)
-			{
-				AuthorityAttributeModifierMutations.Mutations.RemoveAt(i);
-				AuthorityAttributeModifierMutations.MarkArrayDirty();
-			}
+			return (CurrentTime - Mutation.MutationTimestamp) > MaxStateRetentionTime;
+		});
+		if (RemovedMutations > 0)
+		{
+			AuthorityAttributeModifierMutations.MarkArrayDirty();
 		}
 	}
 	else
@@ -2426,7 +2406,7 @@ void USimpleAttributeComponent::SendEventToServer(
 	}
 
 	const FGuid EventID = FGuid::NewGuid();
-	ServerSendEvent(EventID, EventTag, DomainTag, Payload, Sender, ListenerFilter);
+	ServerOnlySendEvent(EventID, EventTag, DomainTag, Payload, Sender, ListenerFilter);
 }
 
 void USimpleAttributeComponent::SendEventToClient(
@@ -2485,6 +2465,17 @@ void USimpleAttributeComponent::ServerSendEvent_Implementation(
 	MulticastSendEvent(EventID, EventTag, DomainTag, Payload, Sender, ListenerFilter);
 }
 
+void USimpleAttributeComponent::ServerOnlySendEvent_Implementation(
+	const FGuid& EventID,
+	FGameplayTag EventTag,
+	FGameplayTag DomainTag,
+	const FInstancedStruct& Payload,
+	UObject* Sender,
+	const TArray<UObject*>& ListenerFilter)
+{
+	ProcessIncomingEvent(EventID, EventTag, DomainTag, Payload, Sender, ListenerFilter);
+}
+
 void USimpleAttributeComponent::ClientSendEvent_Implementation(
 	const FGuid& EventID,
 	FGameplayTag EventTag,
@@ -2515,22 +2506,26 @@ void USimpleAttributeComponent::ProcessIncomingEvent(
 	UObject* Sender,
 	const TArray<UObject*>& ListenerFilter)
 {
-	// Check if we've already processed this event
-	if (LocallySentEventIDs.Contains(EventID))
+	const UWorld* World = GetWorld();
+	if (!World)
 	{
-		// Skip duplicate event (we already sent it locally)
 		return;
 	}
 
-	// Add EventID to our set and track timestamp
-	LocallySentEventIDs.Add(EventID);
-	if (UWorld* World = GetWorld())
+	// Purely local events carry no EventID and are never duplicates; deduplicating the empty ID would drop every
+	// later local event until the next cleanup.
+	if (EventID.IsValid())
 	{
+		// Already processed here (we sent it locally and the server's multicast echoed it back).
+		if (EventIDTimestamps.Contains(EventID))
+		{
+			return;
+		}
 		EventIDTimestamps.Add(EventID, World->GetTimeSeconds());
 	}
 
 	// Get the SimpleEventSubsystem and dispatch the event
-	if (UGameInstance* GameInstance = GetWorld()->GetGameInstance())
+	if (UGameInstance* GameInstance = World->GetGameInstance())
 	{
 		if (USimpleEventSubsystem* EventSubsystem = GameInstance->GetSubsystem<USimpleEventSubsystem>())
 		{
@@ -2541,29 +2536,19 @@ void USimpleAttributeComponent::ProcessIncomingEvent(
 
 void USimpleAttributeComponent::CleanupOldEventIDs()
 {
-	if (!GetWorld())
+	const UWorld* World = GetWorld();
+	if (!World)
 	{
 		return;
 	}
 
-	const double CurrentTime = GetWorld()->GetTimeSeconds();
-	const double MaxRetentionTime = 30.0;
-
-	TArray<FGuid> EventIDsToRemove;
-
-	// Find EventIDs older than 30 seconds
-	for (const TPair<FGuid, double>& Pair : EventIDTimestamps)
+	// An echo arrives within a round trip; 30 seconds is far beyond any deliverable duplicate.
+	const double Cutoff = World->GetTimeSeconds() - 30.0;
+	for (auto It = EventIDTimestamps.CreateIterator(); It; ++It)
 	{
-		if (CurrentTime - Pair.Value > MaxRetentionTime)
+		if (It.Value() < Cutoff)
 		{
-			EventIDsToRemove.Add(Pair.Key);
+			It.RemoveCurrent();
 		}
-	}
-
-	// Remove old EventIDs
-	for (const FGuid& EventIDToRemove : EventIDsToRemove)
-	{
-		LocallySentEventIDs.Remove(EventIDToRemove);
-		EventIDTimestamps.Remove(EventIDToRemove);
 	}
 }

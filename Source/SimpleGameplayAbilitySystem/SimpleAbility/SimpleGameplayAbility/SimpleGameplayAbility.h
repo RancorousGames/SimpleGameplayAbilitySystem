@@ -83,8 +83,9 @@ public:
 
 	/* Callable Functions */
 
-	// Called by the AbilityComponent immediately after creating the ability instance
-	void Initialize(USimpleGameplayAbilityComponent* ActivatingAbilityComponent, USimpleAttributeComponent* ActivatingAttributeComponent, FGuid NewAbilityID);
+	// Called by the AbilityComponent before every activation of this instance. InActivationTime is the (validated or
+	// replicated) server time the activation is stamped with; negative means "now".
+	void Initialize(USimpleGameplayAbilityComponent* ActivatingAbilityComponent, USimpleAttributeComponent* ActivatingAttributeComponent, FGuid NewAbilityID, double InActivationTime = -1.0);
 
 	/**
 	 * Use this function to activate abilities within this ability. SubAbilities don't support replication, you can
@@ -231,6 +232,12 @@ private:
 	UPROPERTY()
 	double ActivationTime = 0;
 	
-	// Used to keep track of sub abilities which this ability has created which need to be ended when this ability ends/cancels
+	// Next counter handed to TakeStateSnapshot. Per activation, so client and server number their snapshots identically
+	// no matter when either side prunes or resolves earlier ones.
+	int32 NextSnapshotCounter = 0;
+
+	// Used to keep track of sub abilities which this ability has created which need to be ended when this ability ends/cancels.
+	// A UPROPERTY so running sub abilities (outered to this ability, referenced nowhere else) survive garbage collection.
+	UPROPERTY()
 	TArray<FActivatedSubAbility> SubAbilityInstances;
 };
